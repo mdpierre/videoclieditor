@@ -1,0 +1,4 @@
+interface:
+  display_name: "Guided Video Editor"
+  short_description: "Turn a raw video into a guided transcript edit"
+  default_prompt: "Use $guided-video-editor to transcribe this video, talk with me about the transcript, and turn the approved draft into the final cut."

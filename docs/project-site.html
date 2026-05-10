@@ -1,0 +1,1237 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Video CLI Toolkit - Operating Guide</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #18201d;
+      --muted: #5c6862;
+      --paper: #f7f4ed;
+      --white: #fffdf8;
+      --line: #d8d0c2;
+      --green: #1f6f55;
+      --green-deep: #124233;
+      --blue: #255f85;
+      --coral: #be5b42;
+      --gold: #b6802c;
+      --violet: #6f5f9d;
+      --shadow: 0 20px 55px rgba(35, 31, 22, 0.11);
+      --radius: 8px;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        linear-gradient(180deg, rgba(247, 244, 237, 0.96), rgba(247, 244, 237, 1)),
+        repeating-linear-gradient(90deg, rgba(31, 111, 85, 0.055) 0 1px, transparent 1px 72px);
+      line-height: 1.55;
+    }
+
+    a {
+      color: inherit;
+    }
+
+    code, pre, .mono {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    .shell {
+      background: #17201c;
+      color: #f1f5eb;
+      border-radius: var(--radius);
+      padding: 16px;
+      overflow-x: auto;
+      font-size: 0.9rem;
+      line-height: 1.55;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+    }
+
+    .page {
+      min-height: 100vh;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 14px clamp(18px, 4vw, 54px);
+      background: rgba(247, 244, 237, 0.92);
+      border-bottom: 1px solid rgba(216, 208, 194, 0.8);
+      backdrop-filter: blur(18px);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 800;
+    }
+
+    .brand-mark {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      color: var(--white);
+      background: var(--green-deep);
+      border-radius: 7px;
+      box-shadow: 0 7px 18px rgba(18, 66, 51, 0.2);
+    }
+
+    .nav {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      font-size: 0.88rem;
+      color: var(--muted);
+    }
+
+    .nav a {
+      text-decoration: none;
+      padding: 6px 8px;
+      border-radius: 6px;
+    }
+
+    .nav a:hover {
+      color: var(--ink);
+      background: rgba(31, 111, 85, 0.08);
+    }
+
+    .hero {
+      min-height: calc(100vh - 64px);
+      display: grid;
+      grid-template-columns: minmax(0, 1.05fr) minmax(320px, 0.95fr);
+      align-items: center;
+      gap: clamp(32px, 6vw, 88px);
+      padding: clamp(42px, 7vw, 90px) clamp(18px, 6vw, 86px) 38px;
+    }
+
+    .eyebrow {
+      margin: 0 0 14px;
+      color: var(--green-deep);
+      font-size: 0.78rem;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0;
+    }
+
+    h1, h2, h3 {
+      letter-spacing: 0;
+      line-height: 1.06;
+      margin: 0;
+    }
+
+    h1 {
+      font-size: clamp(3rem, 8vw, 7.4rem);
+      max-width: 9ch;
+    }
+
+    h2 {
+      font-size: clamp(2rem, 4vw, 4.4rem);
+      max-width: 12ch;
+    }
+
+    h3 {
+      font-size: 1.08rem;
+    }
+
+    .hero-copy {
+      max-width: 740px;
+    }
+
+    .lead {
+      max-width: 760px;
+      margin: 22px 0 0;
+      color: var(--muted);
+      font-size: clamp(1.05rem, 1.8vw, 1.32rem);
+    }
+
+    .hero-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 30px;
+    }
+
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-height: 44px;
+      padding: 0 15px;
+      border: 1px solid var(--ink);
+      border-radius: 7px;
+      background: var(--ink);
+      color: var(--white);
+      text-decoration: none;
+      font-weight: 800;
+      font-size: 0.92rem;
+    }
+
+    .button.secondary {
+      background: transparent;
+      color: var(--ink);
+      border-color: var(--line);
+    }
+
+    .hero-visual {
+      position: relative;
+      min-height: 520px;
+      display: grid;
+      align-items: center;
+    }
+
+    .machine {
+      position: relative;
+      padding: 24px;
+      border: 1px solid #c9c0af;
+      border-radius: var(--radius);
+      background: linear-gradient(145deg, #fffdf8, #ebe4d7);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .machine::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background-image: linear-gradient(rgba(31, 111, 85, 0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(31, 111, 85, 0.08) 1px, transparent 1px);
+      background-size: 26px 26px;
+      mask-image: linear-gradient(180deg, black, transparent 72%);
+      pointer-events: none;
+    }
+
+    .screen {
+      position: relative;
+      background: #101815;
+      border-radius: 7px;
+      padding: 18px;
+      color: #eef5e9;
+      border: 5px solid #2c312d;
+      min-height: 260px;
+    }
+
+    .screen-grid {
+      display: grid;
+      gap: 12px;
+    }
+
+    .signal {
+      display: grid;
+      grid-template-columns: repeat(24, 1fr);
+      gap: 4px;
+      align-items: end;
+      min-height: 112px;
+      padding: 14px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 6px;
+    }
+
+    .bar {
+      min-height: 10px;
+      border-radius: 3px 3px 0 0;
+      background: #6bd39f;
+    }
+
+    .bar.cut {
+      background: #e28a6e;
+      opacity: 0.55;
+    }
+
+    .timeline {
+      display: grid;
+      grid-template-columns: 1.4fr 0.42fr 1fr 0.34fr 1.2fr;
+      gap: 5px;
+      height: 18px;
+      margin-top: 10px;
+    }
+
+    .timeline span {
+      border-radius: 3px;
+      background: #6bd39f;
+    }
+
+    .timeline .skip {
+      background: #e28a6e;
+    }
+
+    .mini-output {
+      display: grid;
+      gap: 8px;
+      margin-top: 18px;
+    }
+
+    .mini-output div {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 9px 11px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.08);
+      color: #dbe7d9;
+      font-size: 0.8rem;
+    }
+
+    .deck {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      margin-top: 18px;
+    }
+
+    .chip {
+      padding: 11px;
+      border-radius: 7px;
+      background: #fff8eb;
+      border: 1px solid #d7cab8;
+      font-weight: 800;
+      color: var(--green-deep);
+      text-align: center;
+    }
+
+    section {
+      padding: clamp(54px, 7vw, 96px) clamp(18px, 6vw, 86px);
+      border-top: 1px solid rgba(216, 208, 194, 0.8);
+    }
+
+    .section-head {
+      display: grid;
+      grid-template-columns: minmax(220px, 0.62fr) minmax(280px, 1fr);
+      gap: clamp(24px, 6vw, 80px);
+      align-items: start;
+      margin-bottom: 34px;
+    }
+
+    .section-head p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 1.05rem;
+      max-width: 860px;
+    }
+
+    .feature-strip {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      overflow: hidden;
+      background: var(--white);
+    }
+
+    .feature {
+      min-height: 190px;
+      padding: 22px;
+      border-right: 1px solid var(--line);
+    }
+
+    .feature:last-child {
+      border-right: 0;
+    }
+
+    .feature strong {
+      display: block;
+      margin-bottom: 12px;
+      color: var(--green-deep);
+      font-size: 0.82rem;
+      text-transform: uppercase;
+    }
+
+    .feature p {
+      margin: 12px 0 0;
+      color: var(--muted);
+    }
+
+    .workflow {
+      display: grid;
+      gap: 18px;
+    }
+
+    .workflow-row {
+      display: grid;
+      grid-template-columns: 82px minmax(240px, 0.56fr) minmax(300px, 1fr);
+      gap: 22px;
+      align-items: stretch;
+      padding: 18px;
+      background: var(--white);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+    }
+
+    .step-number {
+      width: 58px;
+      height: 58px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      background: var(--green-deep);
+      color: var(--white);
+      font-size: 1.15rem;
+      font-weight: 900;
+    }
+
+    .tool-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+    }
+
+    .tool-card {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      min-height: 260px;
+      padding: 20px;
+      border-radius: var(--radius);
+      border: 1px solid var(--line);
+      background: var(--white);
+    }
+
+    .tool-card .tag {
+      width: fit-content;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: rgba(37, 95, 133, 0.1);
+      color: var(--blue);
+      font-size: 0.75rem;
+      font-weight: 800;
+    }
+
+    .tool-card p, .workflow-row p, .logic-card p, .improvement p {
+      margin: 0;
+      color: var(--muted);
+    }
+
+    .command {
+      margin-top: auto;
+      padding: 12px;
+      border-radius: 6px;
+      background: #19221f;
+      color: #f5f3ec;
+      font-size: 0.82rem;
+      overflow-x: auto;
+    }
+
+    .logic-grid {
+      display: grid;
+      grid-template-columns: minmax(300px, 0.78fr) minmax(320px, 1fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .logic-card {
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--white);
+    }
+
+    .logic-card.accent {
+      background: #17201c;
+      color: #f6f2e8;
+      border-color: #17201c;
+    }
+
+    .logic-card.accent p {
+      color: #c8d1c8;
+    }
+
+    .parameter-list {
+      display: grid;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .parameter {
+      display: grid;
+      grid-template-columns: 160px 1fr;
+      gap: 14px;
+      padding: 12px;
+      border: 1px solid rgba(216, 208, 194, 0.8);
+      border-radius: 6px;
+      background: rgba(255, 253, 248, 0.72);
+    }
+
+    .parameter b {
+      color: var(--green-deep);
+      overflow-wrap: anywhere;
+    }
+
+    .parameter span {
+      color: var(--muted);
+    }
+
+    .decision-map {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+      margin-top: 18px;
+    }
+
+    .decision {
+      position: relative;
+      min-height: 132px;
+      padding: 16px;
+      border-radius: 7px;
+      background: #fdf8ee;
+      border: 1px solid #dbcfbd;
+    }
+
+    .decision::after {
+      content: "";
+      position: absolute;
+      right: -8px;
+      top: 50%;
+      width: 8px;
+      border-top: 2px solid var(--line);
+    }
+
+    .decision:last-child::after {
+      display: none;
+    }
+
+    .decision b {
+      display: block;
+      margin-bottom: 8px;
+    }
+
+    .decision span {
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    .setup {
+      display: grid;
+      grid-template-columns: minmax(300px, 1fr) minmax(300px, 0.8fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .improvements {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 16px;
+    }
+
+    .improvement {
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--white);
+    }
+
+    .priority {
+      display: inline-flex;
+      align-items: center;
+      height: 24px;
+      padding: 0 8px;
+      border-radius: 999px;
+      font-size: 0.73rem;
+      font-weight: 900;
+      margin-bottom: 14px;
+    }
+
+    .priority.now {
+      background: rgba(190, 91, 66, 0.12);
+      color: var(--coral);
+    }
+
+    .priority.next {
+      background: rgba(182, 128, 44, 0.14);
+      color: #83590e;
+    }
+
+    .priority.later {
+      background: rgba(111, 95, 157, 0.13);
+      color: var(--violet);
+    }
+
+    .builder {
+      display: grid;
+      grid-template-columns: minmax(300px, 0.8fr) minmax(320px, 1fr);
+      gap: 18px;
+      align-items: stretch;
+    }
+
+    .builder form, .json-output {
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--white);
+    }
+
+    label {
+      display: grid;
+      gap: 6px;
+      margin-bottom: 14px;
+      color: var(--muted);
+      font-size: 0.88rem;
+      font-weight: 700;
+    }
+
+    input, select, textarea {
+      width: 100%;
+      min-height: 42px;
+      border: 1px solid #cfc6b6;
+      border-radius: 6px;
+      background: #fffefa;
+      color: var(--ink);
+      padding: 10px 11px;
+      font: inherit;
+    }
+
+    textarea {
+      min-height: 92px;
+      resize: vertical;
+    }
+
+    .copy-row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-top: 14px;
+    }
+
+    .json-output pre {
+      min-height: 280px;
+      margin: 0;
+      white-space: pre-wrap;
+    }
+
+    .footer {
+      padding: 34px clamp(18px, 6vw, 86px);
+      background: #17201c;
+      color: #eef5e9;
+    }
+
+    .footer p {
+      margin: 0;
+      color: #c8d1c8;
+    }
+
+    @media (max-width: 1050px) {
+      .hero,
+      .section-head,
+      .logic-grid,
+      .setup,
+      .builder {
+        grid-template-columns: 1fr;
+      }
+
+      .hero {
+        min-height: auto;
+      }
+
+      .hero-visual {
+        min-height: auto;
+      }
+
+      .feature-strip,
+      .tool-grid,
+      .improvements,
+      .decision-map {
+        grid-template-columns: repeat(2, 1fr);
+      }
+    }
+
+    @media (max-width: 720px) {
+      .topbar {
+        position: static;
+        align-items: flex-start;
+      }
+
+      .nav {
+        display: none;
+      }
+
+      .feature-strip,
+      .tool-grid,
+      .improvements,
+      .decision-map,
+      .deck {
+        grid-template-columns: 1fr;
+      }
+
+      .feature {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .workflow-row,
+      .parameter {
+        grid-template-columns: 1fr;
+      }
+
+      .decision::after {
+        display: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">VC</div>
+        <span>Video CLI Toolkit</span>
+      </div>
+      <nav class="nav" aria-label="Page sections">
+        <a href="#what">What It Is</a>
+        <a href="#workflow">Workflow</a>
+        <a href="#tools">Tools</a>
+        <a href="#logic">Operating Logic</a>
+        <a href="#setup">Setup</a>
+        <a href="#improvements">Improvements</a>
+        <a href="#builder">JSON Builder</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero" id="top">
+        <div class="hero-copy">
+          <p class="eyebrow">Local-first Apple Silicon video workflow</p>
+          <h1>Video CLI Toolkit</h1>
+          <p class="lead">
+            A Python command-line layer over ffmpeg, whisper-cpp, and auto-editor for turning raw talking-head footage into transcripts, captions, review sheets, silence-cut drafts, transcript-matched clips, and final edited exports.
+          </p>
+          <div class="hero-actions">
+            <a class="button" href="#workflow">Start with the workflow</a>
+            <a class="button secondary" href="#logic">Read the chopping logic</a>
+          </div>
+        </div>
+
+        <div class="hero-visual" aria-label="Visual overview of transcript based editing">
+          <div class="machine">
+            <div class="screen">
+              <div class="screen-grid">
+                <div class="mono">toolkit rewrite-edit input.mp4 --transcript-file final_draft.txt</div>
+                <div class="signal" aria-hidden="true">
+                  <span class="bar" style="height: 32px"></span>
+                  <span class="bar" style="height: 78px"></span>
+                  <span class="bar" style="height: 46px"></span>
+                  <span class="bar cut" style="height: 18px"></span>
+                  <span class="bar cut" style="height: 12px"></span>
+                  <span class="bar" style="height: 92px"></span>
+                  <span class="bar" style="height: 68px"></span>
+                  <span class="bar" style="height: 40px"></span>
+                  <span class="bar cut" style="height: 16px"></span>
+                  <span class="bar" style="height: 84px"></span>
+                  <span class="bar" style="height: 64px"></span>
+                  <span class="bar" style="height: 94px"></span>
+                  <span class="bar cut" style="height: 14px"></span>
+                  <span class="bar cut" style="height: 20px"></span>
+                  <span class="bar" style="height: 56px"></span>
+                  <span class="bar" style="height: 88px"></span>
+                  <span class="bar" style="height: 72px"></span>
+                  <span class="bar cut" style="height: 18px"></span>
+                  <span class="bar" style="height: 62px"></span>
+                  <span class="bar" style="height: 80px"></span>
+                  <span class="bar" style="height: 42px"></span>
+                  <span class="bar cut" style="height: 12px"></span>
+                  <span class="bar" style="height: 76px"></span>
+                  <span class="bar" style="height: 36px"></span>
+                </div>
+                <div class="timeline" aria-hidden="true">
+                  <span></span><span class="skip"></span><span></span><span class="skip"></span><span></span>
+                </div>
+                <div class="mini-output">
+                  <div><span>source words</span><b>match</b></div>
+                  <div><span>kept ranges</span><b>merge</b></div>
+                  <div><span>transcript_edit.mp4</span><b>render</b></div>
+                </div>
+              </div>
+            </div>
+            <div class="deck" aria-label="Core engines">
+              <div class="chip">ffmpeg</div>
+              <div class="chip">whisper-cpp</div>
+              <div class="chip">auto-editor</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="what">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">What it is</p>
+            <h2>The project in plain English</h2>
+          </div>
+          <p>
+            This toolkit is a local video production assistant. Python does the orchestration, while external binaries do the expensive work: ffmpeg extracts audio and renders clips, whisper-cpp creates transcript data, and auto-editor makes fast silence-cut drafts. The project writes every run into a timestamped output folder, so each edit has its own transcript, ranges, clips, metadata, and final video.
+          </p>
+        </div>
+
+        <div class="feature-strip">
+          <article class="feature">
+            <strong>Input</strong>
+            <h3>One media file</h3>
+            <p>Point the CLI at an MP4, MOV, AIFF, CAF, or other ffmpeg-readable file.</p>
+          </article>
+          <article class="feature">
+            <strong>Analysis</strong>
+            <h3>Audio and transcript</h3>
+            <p>The toolkit extracts mono 16 kHz WAV audio and asks whisper-cpp for text, segment, and word timing data.</p>
+          </article>
+          <article class="feature">
+            <strong>Edit plan</strong>
+            <h3>Ranges and decisions</h3>
+            <p>Commands convert transcript matches, review choices, rewritten text, or manual JSON into time ranges.</p>
+          </article>
+          <article class="feature">
+            <strong>Output</strong>
+            <h3>Rendered artifacts</h3>
+            <p>The final cut lands as <code>transcript_edit.mp4</code> or <code>edited.mp4</code>, with machine-readable metadata in <code>run.json</code>.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="workflow">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Intended workflow</p>
+            <h2>How you should use it</h2>
+          </div>
+          <p>
+            The project now has three front doors. Use the guided agent workflow when the editor is Codex or Claude, use rewrite-edit when the final transcript already exists, and use the browser word editor when you want hands-on transcript editing.
+          </p>
+        </div>
+
+        <div class="workflow">
+          <article class="workflow-row">
+            <div class="step-number">1</div>
+            <div>
+              <h3>Raw video into a guided editing conversation</h3>
+              <p>Best when an agent needs to transcribe the video, help shape a draft, get approval, and render the final cut.</p>
+            </div>
+            <pre class="shell"><code>toolkit transcribe /path/to/input.mp4
+# then use the guided-video-editor skill to shape the final transcript
+toolkit rewrite-edit /path/to/input.mp4 --transcript-file final_draft.txt</code></pre>
+          </article>
+
+          <article class="workflow-row">
+            <div class="step-number">2</div>
+            <div>
+              <h3>Final transcript into final video</h3>
+              <p>Best when you already know the finished wording. This is the cleanest CLI/API-shaped path for Codex.</p>
+            </div>
+            <pre class="shell"><code>toolkit rewrite-edit /path/to/input.mp4 --transcript-file final_draft.txt
+toolkit rewrite-edit /path/to/input.mp4 --transcript "clean final draft"
+cat final_draft.txt | toolkit rewrite-edit /path/to/input.mp4 --stdin</code></pre>
+          </article>
+
+          <article class="workflow-row">
+            <div class="step-number">3</div>
+            <div>
+              <h3>Manual transcript cleanup</h3>
+              <p>Best when you want to inspect every word, delete filler, cut pauses, reorder chunks, and export by hand.</p>
+            </div>
+            <pre class="shell"><code>toolkit word-editor /path/to/input.mp4
+toolkit word-editor /path/to/input.mp4 --model small.en</code></pre>
+          </article>
+
+          <article class="workflow-row">
+            <div class="step-number">4</div>
+            <div>
+              <h3>Fallback review sheet</h3>
+              <p>Best for a simple keep/cut text pass when a browser editor is too much or an agent needs explicit segment ids.</p>
+            </div>
+            <pre class="shell"><code>toolkit review-sheet /path/to/input.mp4
+toolkit ranges-from-review /path/to/input.mp4 --instructions "keep 3-6, 9, 12-14"
+toolkit edit-from-review /path/to/input.mp4 --review review_sheet.txt</code></pre>
+          </article>
+        </div>
+      </section>
+
+      <section id="tools">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Current tools</p>
+            <h2>What the CLI can do today</h2>
+          </div>
+          <p>
+            These are the available subcommands from the argparse CLI. The commands print JSON so agents can read the run directory, artifacts, and decision metadata after each run.
+          </p>
+        </div>
+
+        <div class="tool-grid">
+          <article class="tool-card">
+            <span class="tag">Environment</span>
+            <h3><code>setup</code> and <code>doctor</code></h3>
+            <p>Preview or apply local setup actions, then check ffmpeg, whisper-cpp, models, auto-editor, the venv, and VideoToolbox support.</p>
+            <div class="command mono">toolkit setup --apply<br>toolkit doctor</div>
+          </article>
+
+          <article class="tool-card">
+            <span class="tag">Transcription</span>
+            <h3><code>transcribe</code></h3>
+            <p>Extracts mono 16 kHz audio, runs whisper-cpp, normalizes output, and writes <code>transcript.txt</code> plus <code>segments.json</code>.</p>
+            <div class="command mono">toolkit transcribe input.mp4 --model medium.en</div>
+          </article>
+
+          <article class="tool-card">
+            <span class="tag">Captions</span>
+            <h3><code>captions</code></h3>
+            <p>Creates SRT captions from existing or newly generated transcript segments.</p>
+            <div class="command mono">toolkit captions input.mp4</div>
+          </article>
+
+          <article class="tool-card">
+            <span class="tag">Rough cut</span>
+            <h3><code>edit</code> and <code>pipeline</code></h3>
+            <p>Uses auto-editor for silence-cut talking-head edits. Pipeline runs transcription, edit, and captions together.</p>
+            <div class="command mono">toolkit edit input.mp4 --margin 0.2s,1.0s<br>toolkit pipeline input.mp4</div>
+          </article>
+
+          <article class="tool-card">
+            <span class="tag">Transcript matching</span>
+            <h3><code>transcript-edit</code></h3>
+            <p>Builds video from exact queries, fuzzy queries, or manual ranges JSON. Adds padding, clips each range, and concatenates the result.</p>
+            <div class="command mono">toolkit transcript-edit input.mp4 --fuzzy-query "chapter sixteen" --fuzzy-threshold 0.55</div>
+          </article>
+
+          <article class="tool-card">
+            <span class="tag">Agent edit</span>
+            <h3><code>rewrite-edit</code></h3>
+            <p>Matches a final-draft transcript against word-level source timing, detects silence boundaries, builds ranges, and renders the final cut.</p>
+            <div class="command mono">toolkit rewrite-edit input.mp4 --transcript-file final_draft.txt --max-silence 0.2</div>
+          </article>
+
+          <article class="tool-card">
+            <span class="tag">Browser review</span>
+            <h3><code>word-editor</code></h3>
+            <p>Opens the source video beside word cards so a human can remove words, chunks, fillers, and long pauses before exporting.</p>
+            <div class="command mono">toolkit word-editor input.mp4</div>
+          </article>
+
+          <article class="tool-card">
+            <span class="tag">Segment review</span>
+            <h3><code>review-sheet</code>, <code>review-ui</code>, <code>ranges-from-review</code></h3>
+            <p>Creates a line-by-line timestamped transcript and converts keep/cut choices into a JSON ranges file.</p>
+            <div class="command mono">toolkit ranges-from-review input.mp4 --instructions "cut 0-2, 5"</div>
+          </article>
+
+          <article class="tool-card">
+            <span class="tag">Review render</span>
+            <h3><code>edit-from-review</code></h3>
+            <p>Reads an edited review sheet, treats remaining segment lines as kept material, and renders a transcript edit.</p>
+            <div class="command mono">toolkit edit-from-review input.mp4 --padding 0.2,0.5</div>
+          </article>
+        </div>
+      </section>
+
+      <section id="logic">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Operating logic</p>
+            <h2>How it decides where to chop</h2>
+          </div>
+          <p>
+            The toolkit has two kinds of chopping logic: audio silence cutting through auto-editor, and transcript-aware cutting through Python range builders. The strongest path is transcript-aware because it can preserve intended wording instead of blindly deleting quiet sections.
+          </p>
+        </div>
+
+        <div class="logic-grid">
+          <article class="logic-card accent">
+            <h3>Core decision chain</h3>
+            <div class="decision-map">
+              <div class="decision">
+                <b>Transcribe</b>
+                <span>Extract audio and get segment or word timestamps.</span>
+              </div>
+              <div class="decision">
+                <b>Select</b>
+                <span>Choose source words by final transcript, exact query, fuzzy query, review ids, or manual ranges.</span>
+              </div>
+              <div class="decision">
+                <b>Shape</b>
+                <span>Add padding, snap phrase boundaries, merge adjacent ranges, and split at real silence.</span>
+              </div>
+              <div class="decision">
+                <b>Render</b>
+                <span>Cut each range with ffmpeg and concatenate clips into the final MP4.</span>
+              </div>
+            </div>
+          </article>
+
+          <article class="logic-card">
+            <h3>Configured defaults</h3>
+            <div class="parameter-list">
+              <div class="parameter"><b>Whisper model</b><span><code>medium.en</code> from <code>models/ggml-medium.en.bin</code> unless <code>--model</code> overrides it.</span></div>
+              <div class="parameter"><b>Audio extraction</b><span>ffmpeg writes mono, 16 kHz, <code>pcm_s16le</code> WAV audio.</span></div>
+              <div class="parameter"><b>Auto-editor margin</b><span><code>0.3s,1.5s</code> by default, or <code>--margin PRE,POST</code> for silence-cut rough edits.</span></div>
+              <div class="parameter"><b>Video codec</b><span><code>h264_videotoolbox</code> by default, with fallback to <code>libx264</code> when needed.</span></div>
+              <div class="parameter"><b>Transcript padding</b><span><code>0.4,0.8</code> seconds by default for transcript-selected ranges.</span></div>
+            </div>
+          </article>
+
+          <article class="logic-card">
+            <h3>Rewrite-edit matching</h3>
+            <p>
+              <code>rewrite-edit</code> tokenizes the final draft transcript and the source words, normalizes punctuation and number words, then runs a dynamic-programming matcher. It keeps source words that best represent the final transcript, supports simple merged-token cases, prefers exact full windows when possible, and can shift to a later duplicate take if the boundary score is better.
+            </p>
+            <div class="parameter-list">
+              <div class="parameter"><b><code>MATCH_THRESHOLD</code></b><span><code>0.78</code> minimum similarity for one target token to one source token.</span></div>
+              <div class="parameter"><b><code>MERGE_THRESHOLD</code></b><span><code>0.84</code> for matching two target tokens to one source word, or one target token to two source words.</span></div>
+              <div class="parameter"><b><code>MIN_ANCHOR_WORDS</code></b><span><code>4</code> words required for stable anchor runs.</span></div>
+              <div class="parameter"><b><code>PHRASE_LOOKAROUND_WORDS</code></b><span><code>6</code> words allowed when snapping phrase starts or ends to cleaner boundaries.</span></div>
+            </div>
+          </article>
+
+          <article class="logic-card">
+            <h3>Sound and silence detection</h3>
+            <p>
+              Rewrite-edit uses ffmpeg <code>silencedetect</code> to identify real audio gaps before splitting otherwise adjacent kept words. This helps avoid chopping inside a sentence unless there is both silence evidence and a reasonable linguistic boundary.
+            </p>
+            <div class="parameter-list">
+              <div class="parameter"><b><code>noise_db</code></b><span><code>-35.0dB</code>. Audio quieter than this counts as silence for rewrite splitting.</span></div>
+              <div class="parameter"><b><code>min_duration</code></b><span><code>0.2s</code>, or the requested <code>--max-silence</code> when smaller.</span></div>
+              <div class="parameter"><b><code>--max-silence</code></b><span>Default <code>0.2</code>. Gaps longer than this may split a clip if audio silence overlaps enough.</span></div>
+              <div class="parameter"><b>Boundary score</b><span>Strong punctuation helps split. Weak words like "and", "the", "to", "that", and "you" make a cut less attractive.</span></div>
+            </div>
+          </article>
+
+          <article class="logic-card">
+            <h3>Transcript-edit matching</h3>
+            <p>
+              <code>transcript-edit</code> works at the segment level. Exact matching normalizes punctuation and number words, then checks one-, two-, and three-segment windows so phrases can cross segment boundaries. Fuzzy matching scores each window by sequence similarity, token overlap, and contains checks, then keeps the best window over the threshold.
+            </p>
+            <div class="parameter-list">
+              <div class="parameter"><b><code>--fuzzy-threshold</code></b><span>Default <code>0.6</code>. Lower values catch rougher matches but increase false positives.</span></div>
+              <div class="parameter"><b><code>merge_gap</code></b><span>Adjacent selected ranges merge when they are within <code>1.0s</code>.</span></div>
+              <div class="parameter"><b>Number words</b><span>Words from zero through twenty normalize to digits, so "sixteen" can match "16".</span></div>
+            </div>
+          </article>
+
+          <article class="logic-card">
+            <h3>Manual range rendering</h3>
+            <p>
+              Manual JSON bypasses transcript matching. Each range must include numeric <code>start</code> and <code>end</code>. The toolkit clips each range with ffmpeg, writes <code>clip_ranges.json</code>, writes a concat list, and produces <code>transcript_edit.mp4</code>.
+            </p>
+            <pre class="shell"><code>[
+  { "start": 12.4, "end": 18.9, "label": "hook" },
+  { "start": 44.1, "end": 58.0, "label": "cta" }
+]</code></pre>
+          </article>
+        </div>
+      </section>
+
+      <section id="setup">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Setup</p>
+            <h2>How to get it running</h2>
+          </div>
+          <p>
+            The Python package itself has no runtime dependencies. The external tools matter: ffmpeg, whisper-cpp, auto-editor, and local GGML Whisper models.
+          </p>
+        </div>
+
+        <div class="setup">
+          <div>
+            <pre class="shell"><code>cd /Users/michaelpierre/Documents/coding-projects/video-cli-toolkit
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install .
+toolkit setup
+make install-global
+toolkit doctor</code></pre>
+          </div>
+          <article class="logic-card">
+            <h3>Where files go</h3>
+            <div class="parameter-list">
+              <div class="parameter"><b>Models</b><span><code>models/ggml-base.bin</code>, <code>ggml-small.en.bin</code>, or <code>ggml-medium.en.bin</code>.</span></div>
+              <div class="parameter"><b>Runs</b><span><code>outputs/&lt;source-stem&gt;/&lt;run-id&gt;/</code>.</span></div>
+              <div class="parameter"><b>Metadata</b><span><code>run.json</code> captures the command path, artifacts, counts, and matching summary.</span></div>
+              <div class="parameter"><b>Global command</b><span><code>make install-global</code> installs a wrapper to <code>~/.local/bin/toolkit</code>.</span></div>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section id="improvements">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Places for improvement</p>
+            <h2>What the app is missing next</h2>
+          </div>
+          <p>
+            The core engine is useful now. The biggest next gains are making decisions more inspectable, easier to tune, and easier for an agent to modify through structured requests.
+          </p>
+        </div>
+
+        <div class="improvements">
+          <article class="improvement">
+            <span class="priority now">High leverage</span>
+            <h3>Inspectable edit plan before render</h3>
+            <p>Add a command that outputs the proposed word matches, silences, boundary scores, and clip ranges without rendering. This would let Codex explain and adjust a cut before spending time on ffmpeg.</p>
+          </article>
+          <article class="improvement">
+            <span class="priority now">High leverage</span>
+            <h3>Structured JSON work requests</h3>
+            <p>Create a stable request schema for edits: source path, workflow, model, target transcript, padding, max silence, output style, and notes. Then Codex can accept a JSON brief and run the right command.</p>
+          </article>
+          <article class="improvement">
+            <span class="priority next">Next</span>
+            <h3>Parameter presets</h3>
+            <p>Add named presets such as tight social clip, gentle talking-head cleanup, sermon excerpt, or rough review draft. Each preset could tune padding, fuzzy threshold, max silence, and merge behavior.</p>
+          </article>
+          <article class="improvement">
+            <span class="priority next">Next</span>
+            <h3>Visual decision report</h3>
+            <p>Generate an HTML report per run with transcript words, kept/cut color coding, silence gaps, range boundaries, and links to artifacts. This would make debugging cuts much easier.</p>
+          </article>
+          <article class="improvement">
+            <span class="priority next">Next</span>
+            <h3>Audio detection tuning</h3>
+            <p>Expose silence threshold, minimum silence duration, merge gap, and weak boundary handling as CLI parameters. Right now some of the important values are constants inside Python.</p>
+          </article>
+          <article class="improvement">
+            <span class="priority later">Later</span>
+            <h3>Batch and queue mode</h3>
+            <p>Support a folder of videos, a JSONL queue of edit requests, and resumable progress. That would turn the toolkit into a small local production line.</p>
+          </article>
+          <article class="improvement">
+            <span class="priority later">Later</span>
+            <h3>Chapter and highlight extraction</h3>
+            <p>Use transcript structure to suggest hooks, calls to action, repeated takes, and clean excerpt candidates before a user writes a final transcript.</p>
+          </article>
+          <article class="improvement">
+            <span class="priority later">Later</span>
+            <h3>Export profiles</h3>
+            <p>Add output profiles for YouTube, vertical shorts, podcast clips, captions burned in, and archive quality.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="builder">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Part two seed</p>
+            <h2>Codex work request JSON</h2>
+          </div>
+          <p>
+            This tiny builder is intentionally simple. It does not run the toolkit, but it sketches the structured JSON this site could eventually hand back to Codex for implementation or editing work.
+          </p>
+        </div>
+
+        <div class="builder">
+          <form id="request-form">
+            <label>
+              Source media path
+              <input name="source" value="/path/to/input.mp4">
+            </label>
+            <label>
+              Workflow
+              <select name="workflow">
+                <option value="rewrite-edit">rewrite-edit</option>
+                <option value="word-editor">word-editor</option>
+                <option value="transcript-edit">transcript-edit</option>
+                <option value="review-sheet">review-sheet</option>
+                <option value="pipeline">pipeline</option>
+              </select>
+            </label>
+            <label>
+              Target transcript or request
+              <textarea name="transcript">Paste the final draft transcript or editing intention here.</textarea>
+            </label>
+            <label>
+              Padding before, after
+              <input name="padding" value="0.4,0.8">
+            </label>
+            <label>
+              Max silence gap
+              <input name="maxSilence" value="0.2">
+            </label>
+            <label>
+              Notes for Codex
+              <textarea name="notes">Explain the desired pacing, cuts to avoid, and what should be delivered.</textarea>
+            </label>
+            <div class="copy-row">
+              <button class="button" type="button" id="copy-json">Copy JSON</button>
+              <span id="copy-status" class="mono" aria-live="polite"></span>
+            </div>
+          </form>
+
+          <div class="json-output">
+            <pre class="shell"><code id="json-preview"></code></pre>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <p>Video CLI Toolkit lives at <code>/Users/michaelpierre/Documents/coding-projects/video-cli-toolkit</code>. Open this file directly in a browser; no server is required.</p>
+    </footer>
+  </div>
+
+  <script>
+    const form = document.querySelector("#request-form");
+    const preview = document.querySelector("#json-preview");
+    const copyButton = document.querySelector("#copy-json");
+    const copyStatus = document.querySelector("#copy-status");
+
+    function buildPayload() {
+      const data = new FormData(form);
+      return {
+        project: "video-cli-toolkit",
+        request_type: "video_edit_work_order",
+        source_media: data.get("source"),
+        workflow: data.get("workflow"),
+        parameters: {
+          padding: data.get("padding"),
+          max_silence: Number(data.get("maxSilence"))
+        },
+        target_transcript_or_intent: data.get("transcript"),
+        notes_for_codex: data.get("notes"),
+        expected_outputs: [
+          "run_dir",
+          "run.json",
+          "transcript_edit.mp4 or relevant artifact",
+          "short explanation of decisions"
+        ]
+      };
+    }
+
+    function renderPayload() {
+      preview.textContent = JSON.stringify(buildPayload(), null, 2);
+      copyStatus.textContent = "";
+    }
+
+    form.addEventListener("input", renderPayload);
+    copyButton.addEventListener("click", async () => {
+      const text = JSON.stringify(buildPayload(), null, 2);
+      try {
+        await navigator.clipboard.writeText(text);
+        copyStatus.textContent = "Copied.";
+      } catch (error) {
+        copyStatus.textContent = "Select the JSON and copy manually.";
+      }
+    });
+
+    renderPayload();
+  </script>
+</body>
+</html>

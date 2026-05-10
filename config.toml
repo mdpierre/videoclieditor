@@ -1,0 +1,19 @@
+[whisper]
+model_name = "medium.en"
+model_dir = "models"
+binary_candidates = ["whisper-cli", "whisper-cpp", "main"]
+
+[auto_editor]
+margin = "0.3s,1.5s"
+
+[outputs]
+root = "outputs"
+
+[captions]
+format = "srt"
+
+[ffmpeg]
+audio_codec = "pcm_s16le"
+video_codec = "h264_videotoolbox"
+quality = "50"
+
