@@ -1512,16 +1512,47 @@ def generate_decision_report_html(plan: dict[str, Any]) -> str:
     def esc(value: object) -> str:
         return _html.escape(str(value))
 
+    def artifact_href(path: object) -> str:
+        return esc(Path(str(path)).name)
+
+    summary = plan.get("match_summary", {})
+    options = plan.get("options", {})
+    kept = int(summary.get("kept_word_count", 0))
+    cut = int(summary.get("cut_word_count", 0))
+    total_words = max(kept + cut, 1)
+    kept_pct = round((kept / total_words) * 100)
+    clip_duration = round(sum(float(item.get("duration", float(item["end"]) - float(item["start"]))) for item in plan.get("clip_ranges", [])), 3)
+    silence_duration = round(sum(float(item.get("duration", 0.0)) for item in plan.get("silences", [])), 3)
+
+    summary_cards = "".join(
+        f'<div class="metric"><span>{esc(label)}</span><strong>{esc(value)}</strong></div>'
+        for label, value in (
+            ("Clips", plan.get("clip_count", 0)),
+            ("Kept Words", f"{kept} ({kept_pct}%)"),
+            ("Cut Words", cut),
+            ("Matched Target", f"{summary.get('matched_target_count', 0)}/{summary.get('target_token_count', 0)}"),
+            ("Clip Time", f"{clip_duration:.3f}s"),
+            ("Detected Silence", f"{silence_duration:.3f}s"),
+        )
+    )
+
+    option_rows = "".join(
+        f"<tr><th>{esc(key)}</th><td><code>{esc(value)}</code></td></tr>"
+        for key, value in options.items()
+    )
+
     word_rows = []
     for word in plan.get("word_matches", []):
         klass = "keep" if word.get("decision") == "keep" else "cut"
         anchored = " anchored" if word.get("anchored") else ""
+        label = "keep" if klass == "keep" else "cut"
         word_rows.append(
-            f'<span class="word {klass}{anchored}" title="{word["start"]:.3f}-{word["end"]:.3f}">{esc(word["word"])}</span>'
+            f'<span class="word {klass}{anchored}" title="{label} {word["start"]:.3f}-{word["end"]:.3f}">{esc(word["word"])}</span>'
         )
 
     range_rows = []
     for item in plan.get("clip_ranges", []):
+        artifact_name = f"clip-{int(item.get('id', 0)):03d}.mp4"
         range_rows.append(
             "<tr>"
             f"<td>{int(item.get('id', 0))}</td>"
@@ -1529,68 +1560,138 @@ def generate_decision_report_html(plan: dict[str, Any]) -> str:
             f"<td>{float(item['end']):.3f}</td>"
             f"<td>{float(item.get('duration', float(item['end']) - float(item['start']))):.3f}</td>"
             f"<td>{esc(item.get('text', ''))}</td>"
+            f'<td><a href="clips/{esc(artifact_name)}">{esc(artifact_name)}</a></td>'
+            "</tr>"
+        )
+
+    silence_rows = []
+    for index, item in enumerate(plan.get("silences", []), start=1):
+        silence_rows.append(
+            "<tr>"
+            f"<td>{index}</td>"
+            f"<td>{float(item['start']):.3f}</td>"
+            f"<td>{float(item['end']):.3f}</td>"
+            f"<td>{float(item.get('duration', float(item['end']) - float(item['start']))):.3f}</td>"
             "</tr>"
         )
 
     boundary_rows = []
     for item in plan.get("boundary_scores", []):
-        if item.get("score", 0) <= plan.get("options", {}).get("weak_boundary_score", 0) and not item.get("overlaps_detected_silence"):
+        if item.get("score", 0) <= options.get("weak_boundary_score", 0) and not item.get("overlaps_detected_silence"):
             continue
+        signal = "silence" if item.get("overlaps_detected_silence") else "boundary"
         boundary_rows.append(
             "<tr>"
             f"<td>{esc(item['left_word'])} / {esc(item['right_word'])}</td>"
             f"<td>{float(item['gap_duration']):.3f}</td>"
             f"<td>{int(item['score'])}</td>"
-            f"<td>{'yes' if item.get('overlaps_detected_silence') else 'no'}</td>"
+            f"<td><span class=\"signal {esc(signal)}\">{esc(signal)}</span></td>"
             "</tr>"
         )
 
     artifacts = plan.get("artifacts", {})
     artifact_links = "".join(
-        f'<li><a href="{esc(Path(path).name)}">{esc(name)}</a></li>'
+        f'<a class="artifact" href="{artifact_href(path)}"><span>{esc(name)}</span><code>{esc(Path(str(path)).name)}</code></a>'
         for name, path in artifacts.items()
         if path and Path(str(path)).name
+    )
+    unmatched_tokens = plan.get("unmatched_target_tokens", [])
+    unmatched_html = (
+        "<p class=\"warning\"><strong>Unmatched target tokens:</strong> "
+        + esc(", ".join(str(token) for token in unmatched_tokens[:24]))
+        + (" ..." if len(unmatched_tokens) > 24 else "")
+        + "</p>"
+        if unmatched_tokens
+        else ""
     )
 
     return f"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Edit Decision Report</title>
 <style>
-body {{ font-family: system-ui, sans-serif; margin: 24px; line-height: 1.45; color: #202124; }}
-h1, h2 {{ margin: 0 0 12px; }}
-section {{ margin: 24px 0; }}
+* {{ box-sizing: border-box; }}
+body {{ margin: 0; background: #f7f5f0; color: #202124; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.45; }}
+main {{ max-width: 1180px; margin: 0 auto; padding: 28px 22px 44px; }}
+header {{ display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 22px; }}
+h1 {{ margin: 0 0 8px; font-size: 30px; line-height: 1.1; }}
+h2 {{ margin: 0 0 12px; font-size: 17px; }}
+section {{ margin: 18px 0; background: #fff; border: 1px solid #dedbd2; border-radius: 8px; padding: 16px; }}
 table {{ border-collapse: collapse; width: 100%; font-size: 13px; }}
-th, td {{ border-bottom: 1px solid #ddd; padding: 7px 8px; text-align: left; vertical-align: top; }}
-.transcript {{ max-width: 980px; }}
-.word {{ display: inline-block; margin: 2px 2px 2px 0; padding: 1px 4px; border-radius: 4px; }}
-.word.keep {{ background: #dff3df; }}
-.word.cut {{ background: #f6dddd; color: #8a2525; text-decoration: line-through; }}
-.word.anchored {{ outline: 2px solid #6aa36a; }}
-.meta {{ color: #5f6368; font-size: 13px; }}
-code {{ background: #f1f3f4; padding: 2px 4px; border-radius: 3px; }}
+th, td {{ border-bottom: 1px solid #e6e2d8; padding: 8px 9px; text-align: left; vertical-align: top; }}
+th {{ color: #5f6368; font-weight: 650; }}
+tr:last-child td, tr:last-child th {{ border-bottom: 0; }}
+a {{ color: #245b8f; text-decoration: none; }}
+a:hover {{ text-decoration: underline; }}
+code {{ background: #f0eee7; padding: 2px 4px; border-radius: 4px; overflow-wrap: anywhere; }}
+.meta {{ color: #5f6368; font-size: 13px; margin: 0; overflow-wrap: anywhere; }}
+.pill {{ display: inline-flex; align-items: center; border: 1px solid #cfc9bc; border-radius: 999px; padding: 5px 9px; font-size: 12px; background: #fff; white-space: nowrap; }}
+.metrics {{ display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; margin-bottom: 18px; }}
+.metric {{ background: #fff; border: 1px solid #dedbd2; border-radius: 8px; padding: 12px; min-width: 0; }}
+.metric span {{ display: block; color: #6a665d; font-size: 12px; margin-bottom: 4px; }}
+.metric strong {{ display: block; font-size: 20px; line-height: 1.1; }}
+.grid {{ display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(280px, 0.9fr); gap: 18px; align-items: start; }}
+.artifacts {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 8px; }}
+.artifact {{ display: block; border: 1px solid #e3ded3; border-radius: 6px; padding: 9px 10px; background: #fbfaf7; }}
+.artifact span {{ display: block; color: #5f6368; font-size: 12px; margin-bottom: 3px; }}
+.artifact code {{ background: transparent; padding: 0; color: #245b8f; }}
+.transcript {{ max-height: 52vh; overflow: auto; padding: 12px; border: 1px solid #e6e2d8; border-radius: 6px; background: #fbfaf7; }}
+.word {{ display: inline-block; margin: 2px 2px 2px 0; padding: 2px 5px; border-radius: 5px; }}
+.word.keep {{ background: #dff0dc; color: #1f4e25; }}
+.word.cut {{ background: #f3ded8; color: #7b2b1f; text-decoration: line-through; }}
+.word.anchored {{ outline: 2px solid #578d58; outline-offset: 1px; }}
+.warning {{ margin: 0 0 12px; padding: 10px 12px; background: #fff5cf; border: 1px solid #e6cf76; border-radius: 6px; color: #5b4a14; }}
+.signal {{ display: inline-flex; border-radius: 999px; padding: 2px 7px; font-size: 12px; }}
+.signal.silence {{ background: #e4eaf6; color: #29466f; }}
+.signal.boundary {{ background: #ece7dc; color: #5b5143; }}
+@media (max-width: 860px) {{
+  header, .grid {{ display: block; }}
+  .metrics {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+  main {{ padding: 20px 12px 32px; }}
+  section {{ padding: 12px; }}
+}}
 </style>
 </head>
 <body>
+<main>
+<header>
+<div>
 <h1>Edit Decision Report</h1>
-<p class="meta">Workflow: <code>{esc(plan.get("workflow"))}</code> · Source: <code>{esc(plan.get("source_path"))}</code></p>
+<p class="meta">Source: <code>{esc(plan.get("source_path"))}</code></p>
+</div>
+<span class="pill">{esc(plan.get("workflow"))}</span>
+</header>
+<div class="metrics">{summary_cards}</div>
+{unmatched_html}
+<div class="grid">
 <section>
 <h2>Artifacts</h2>
-<ul>{artifact_links}</ul>
+<div class="artifacts">{artifact_links}</div>
 </section>
+<section>
+<h2>Options</h2>
+<table><tbody>{option_rows}</tbody></table>
+</section>
+</div>
 <section>
 <h2>Proposed Transcript Decisions</h2>
 <div class="transcript">{" ".join(word_rows)}</div>
 </section>
 <section>
 <h2>Clip Ranges</h2>
-<table><thead><tr><th>#</th><th>Start</th><th>End</th><th>Duration</th><th>Text</th></tr></thead><tbody>{"".join(range_rows)}</tbody></table>
+<table><thead><tr><th>#</th><th>Start</th><th>End</th><th>Duration</th><th>Text</th><th>Clip</th></tr></thead><tbody>{"".join(range_rows)}</tbody></table>
+</section>
+<section>
+<h2>Detected Silences</h2>
+<table><thead><tr><th>#</th><th>Start</th><th>End</th><th>Duration</th></tr></thead><tbody>{"".join(silence_rows)}</tbody></table>
 </section>
 <section>
 <h2>Boundary / Silence Signals</h2>
 <table><thead><tr><th>Boundary</th><th>Gap</th><th>Score</th><th>Silence</th></tr></thead><tbody>{"".join(boundary_rows)}</tbody></table>
 </section>
+</main>
 </body>
 </html>"""
 

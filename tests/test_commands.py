@@ -614,7 +614,11 @@ def test_plan_rewrite_edit_writes_inspectable_artifacts() -> None:
     assert plan["options"]["silence_threshold_db"] == -32.0
     assert run_context.edit_plan_path.exists()
     assert run_context.decision_report_path.exists()
-    assert "Proposed Transcript Decisions" in run_context.decision_report_path.read_text()
+    report_html = run_context.decision_report_path.read_text()
+    assert "Proposed Transcript Decisions" in report_html
+    assert "Detected Silences" in report_html
+    assert "Matched Target" in report_html
+    assert "clip-001.mp4" in report_html
 
 
 def test_rewrite_edit_builds_ranges_renders_video_and_writes_run_metadata(tmp_path: Path) -> None:
