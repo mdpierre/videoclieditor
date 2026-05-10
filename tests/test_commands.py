@@ -23,12 +23,15 @@ from video_cli_toolkit.workflow import (
     export_word_editor_ranges,
     generate_word_editor_html,
     group_words_for_editor,
+    list_edit_presets,
     load_manual_ranges,
     normalize_match_text,
+    plan_rewrite_edit,
     parse_kept_segment_ids,
     parse_padding,
     parse_silencedetect_output,
     parse_review_instructions,
+    resolve_edit_options,
     resolve_rewrite_target_text,
     rewrite_edit,
     select_segments_by_fuzzy_queries,
@@ -446,6 +449,18 @@ def test_padding_and_clip_commands() -> None:
     ]
 
 
+def test_edit_presets_can_be_overridden() -> None:
+    presets = list_edit_presets()
+    assert "tight-social-clip" in presets
+
+    options = resolve_edit_options(preset="tight-social-clip", padding="0.4,0.8", max_silence=0.5)
+
+    assert options["preset"] == "tight-social-clip"
+    assert options["padding"] == "0.4,0.8"
+    assert options["max_silence"] == 0.5
+    assert options["merge_gap"] == presets["tight-social-clip"]["merge_gap"]
+
+
 def test_parse_kept_segment_ids_basic() -> None:
     review_sheet = (
         "[00] 00:00.000-00:03.080 The people who are the strongest\n"
@@ -555,6 +570,53 @@ def test_export_word_editor_ranges_renders_via_transcript_edit() -> None:
     assert result["clip_count"] == 1
 
 
+def test_plan_rewrite_edit_writes_inspectable_artifacts() -> None:
+    config = load_config(PROJECT_ROOT)
+    run_context = create_run_context(config, Path("/tmp/sample.mp4"), run_id="test-plan-edit")
+    words = [
+        {"id": 0, "word": "hello", "start": 0.0, "end": 0.2},
+        {"id": 1, "word": "remove", "start": 0.2, "end": 0.4},
+        {"id": 2, "word": "chapter", "start": 0.7, "end": 1.0},
+        {"id": 3, "word": "16.", "start": 1.0, "end": 1.3},
+    ]
+    segments = [{"id": 0, "start": 0.0, "end": 1.3, "text": "hello remove chapter 16"}]
+
+    def fake_transcribe_words(cfg, ctx, model_name=None):
+        assert cfg is config
+        assert ctx is run_context
+        return words, segments, {}
+
+    with (
+        patch("video_cli_toolkit.workflow.transcribe_words", side_effect=fake_transcribe_words),
+        patch("video_cli_toolkit.workflow.detect_audio_silences", return_value=[{"start": 0.4, "end": 0.7, "duration": 0.3}]),
+        patch("video_cli_toolkit.workflow.probe_duration", return_value=2.0),
+    ):
+        plan = plan_rewrite_edit(
+            config,
+            run_context,
+            transcript_text="hello chapter sixteen",
+            padding="0,0",
+            max_silence_gap=0.2,
+            silence_threshold_db=-32.0,
+            min_silence_duration=0.12,
+            merge_gap=0.0,
+            weak_boundary_score=0,
+            preset="tight-social-clip",
+            notes="draft check",
+        )
+
+    assert plan["step"] == "plan-edit"
+    assert plan["workflow"] == "rewrite-edit"
+    assert plan["clip_count"] == 2
+    assert plan["match_summary"]["kept_word_count"] == 3
+    assert [word["decision"] for word in plan["word_matches"]] == ["keep", "cut", "keep", "keep"]
+    assert plan["silences"] == [{"start": 0.4, "end": 0.7, "duration": 0.3}]
+    assert plan["options"]["silence_threshold_db"] == -32.0
+    assert run_context.edit_plan_path.exists()
+    assert run_context.decision_report_path.exists()
+    assert "Proposed Transcript Decisions" in run_context.decision_report_path.read_text()
+
+
 def test_rewrite_edit_builds_ranges_renders_video_and_writes_run_metadata(tmp_path: Path) -> None:
     config = load_config(PROJECT_ROOT)
     run_context = create_run_context(config, Path("/tmp/sample.mp4"), run_id="test-rewrite-edit")
@@ -595,6 +657,7 @@ def test_rewrite_edit_builds_ranges_renders_video_and_writes_run_metadata(tmp_pa
 
     with (
         patch("video_cli_toolkit.workflow.transcribe_words", side_effect=fake_transcribe_words),
+        patch("video_cli_toolkit.workflow.probe_duration", return_value=2.0),
         patch("video_cli_toolkit.workflow.transcript_edit", side_effect=fake_transcript_edit),
     ):
         result = rewrite_edit(
@@ -642,6 +705,12 @@ def test_handle_rewrite_edit_reads_stdin_and_prints_json(capsys: object) -> None
         model="small.en",
         padding="0.3,0.6",
         max_silence=0.2,
+        merge_gap=None,
+        preset=None,
+        silence_threshold_db=None,
+        min_silence_duration=None,
+        weak_boundary_score=None,
+        notes=None,
         json=True,
     )
 
@@ -672,6 +741,12 @@ def test_handle_rewrite_edit_reads_stdin_and_prints_json(capsys: object) -> None
         model_name="small.en",
         padding="0.3,0.6",
         max_silence_gap=0.2,
+        silence_threshold_db=-35.0,
+        min_silence_duration=0.2,
+        merge_gap=1.0,
+        weak_boundary_score=0,
+        preset=None,
+        notes=None,
     )
     write_run_metadata_mock.assert_called_once()
     payload = json.loads(capsys.readouterr().out)

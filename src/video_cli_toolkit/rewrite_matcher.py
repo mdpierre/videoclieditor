@@ -386,6 +386,10 @@ def _boundary_score(words: list[dict[str, Any]], left_index: int, right_index: i
     return score
 
 
+def score_boundary(words: list[dict[str, Any]], left_index: int, right_index: int) -> int:
+    return _boundary_score(words, left_index, right_index)
+
+
 def _build_kept_runs(words: list[dict[str, Any]], kept_word_ids: set[int]) -> list[tuple[int, int]]:
     runs: list[tuple[int, int]] = []
     current_start: int | None = None
@@ -494,6 +498,7 @@ def _should_split_at_gap(
     *,
     max_silence_gap: float,
     audio_silences: list[dict[str, float]] | None,
+    weak_boundary_score: int = 0,
 ) -> bool:
     if not _gap_matches_audio_silence(
         words,
@@ -503,7 +508,7 @@ def _should_split_at_gap(
         audio_silences=audio_silences,
     ):
         return False
-    return _boundary_score(words, left_index, right_index) > 0
+    return _boundary_score(words, left_index, right_index) > weak_boundary_score
 
 
 def _snap_start_index(words: list[dict[str, Any]], start_index: int, *, lookaround_words: int, pause_gap: float) -> int:
@@ -539,6 +544,7 @@ def build_ranges_from_kept_word_ids(
     pause_gap: float = PAUSE_GAP_THRESHOLD,
     max_silence_gap: float | None = None,
     audio_silences: list[dict[str, float]] | None = None,
+    weak_boundary_score: int = 0,
 ) -> list[dict[str, float]]:
     kept_word_id_set = set(kept_word_ids)
     anchored_word_id_set = set(anchored_word_ids or [])
@@ -559,6 +565,7 @@ def build_ranges_from_kept_word_ids(
                     index,
                     max_silence_gap=max_silence_gap,
                     audio_silences=audio_silences,
+                    weak_boundary_score=weak_boundary_score,
                 )
             ):
                 raw_runs.append((current_start, previous_kept_index))
@@ -624,6 +631,7 @@ def build_ranges_from_kept_word_ids(
                 start_index,
                 max_silence_gap=max_silence_gap,
                 audio_silences=audio_silences,
+                weak_boundary_score=weak_boundary_score,
             )
         )
         if not merged_runs or (start_index > merged_runs[-1][1] + 1 and not bridge_cut_gap) or split_on_silence:

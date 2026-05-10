@@ -17,7 +17,7 @@ from typing import Any
 import webbrowser
 
 from .config import AppConfig
-from .rewrite_matcher import build_ranges_from_kept_word_ids, match_rewrite_words
+from .rewrite_matcher import build_ranges_from_kept_word_ids, match_rewrite_words, score_boundary
 
 
 class ToolkitError(RuntimeError):
@@ -54,6 +54,71 @@ WORD_EDITOR_FILLER_WORDS = ("um", "uh", "erm", "hmm", "mm")
 WORD_EDITOR_LONG_PAUSE_SECONDS = 1.0
 REWRITE_AUDIO_SILENCE_DB = -35.0
 REWRITE_AUDIO_SILENCE_MIN_DURATION = 0.2
+REWRITE_WEAK_BOUNDARY_SCORE = 0
+
+EDIT_PRESETS: dict[str, dict[str, Any]] = {
+    "tight-social-clip": {
+        "padding": "0.12,0.25",
+        "fuzzy_threshold": 0.68,
+        "max_silence": 0.12,
+        "merge_gap": 0.25,
+        "silence_threshold_db": -32.0,
+        "min_silence_duration": 0.12,
+        "weak_boundary_score": 1,
+    },
+    "gentle-talking-head-cleanup": {
+        "padding": "0.35,0.75",
+        "fuzzy_threshold": 0.58,
+        "max_silence": 0.35,
+        "merge_gap": 0.8,
+        "silence_threshold_db": -36.0,
+        "min_silence_duration": 0.25,
+        "weak_boundary_score": 0,
+    },
+    "sermon-excerpt": {
+        "padding": "0.6,1.2",
+        "fuzzy_threshold": 0.55,
+        "max_silence": 0.45,
+        "merge_gap": 1.2,
+        "silence_threshold_db": -38.0,
+        "min_silence_duration": 0.3,
+        "weak_boundary_score": 0,
+    },
+    "rough-review-draft": {
+        "padding": "0.8,1.5",
+        "fuzzy_threshold": 0.5,
+        "max_silence": 0.0,
+        "merge_gap": 1.5,
+        "silence_threshold_db": -35.0,
+        "min_silence_duration": 0.2,
+        "weak_boundary_score": -1,
+    },
+}
+
+EDIT_REQUEST_SCHEMA: dict[str, Any] = {
+    "schema_version": 1,
+    "required": ["source_path", "workflow"],
+    "properties": {
+        "source_path": "Path to source media.",
+        "workflow": "rewrite-edit, transcript-edit, or plan-edit.",
+        "model": "Optional Whisper model name.",
+        "target_transcript": "Inline final transcript for rewrite workflows.",
+        "target_transcript_path": "Path to final transcript text for rewrite workflows.",
+        "queries": "Exact transcript queries for transcript-edit.",
+        "fuzzy_queries": "Fuzzy transcript queries for transcript-edit.",
+        "ranges_path": "Manual ranges JSON path for transcript-edit.",
+        "preset": f"One of: {', '.join(sorted(EDIT_PRESETS))}.",
+        "padding": "PRE,POST seconds, for example 0.2,0.5.",
+        "fuzzy_threshold": "Minimum fuzzy transcript score.",
+        "max_silence": "Max allowed silence gap between kept rewrite words before splitting.",
+        "merge_gap": "Seconds between ranges that may be merged after padding.",
+        "silence_threshold_db": "ffmpeg silencedetect noise threshold in dB.",
+        "min_silence_duration": "Minimum silence duration for ffmpeg silencedetect.",
+        "weak_boundary_score": "Only split detected silence when boundary score is greater than this value.",
+        "output_style": "plan or render.",
+        "notes": "Free-form operator notes stored in run metadata.",
+    },
+}
 
 SILENCE_START_RE = re.compile(r"silence_start:\s*([0-9.]+)")
 SILENCE_END_RE = re.compile(r"silence_end:\s*([0-9.]+)\s*\|\s*silence_duration:\s*([0-9.]+)")
@@ -79,6 +144,8 @@ class RunContext:
     review_ui_path: Path
     word_segments_path: Path
     rewrite_target_path: Path
+    edit_plan_path: Path
+    decision_report_path: Path
 
 
 def project_root_from_here() -> Path:
@@ -128,6 +195,8 @@ def create_run_context(config: AppConfig, input_path: Path, run_id: str | None =
         review_ui_path=run_dir / "review_ui.html",
         word_segments_path=run_dir / "word_segments.json",
         rewrite_target_path=run_dir / "rewrite_target.txt",
+        edit_plan_path=run_dir / "edit_plan.json",
+        decision_report_path=run_dir / "decision_report.html",
     )
 
 
@@ -447,6 +516,93 @@ def parse_padding(padding: str | None, default_before: float = 0.4, default_afte
         raise ToolkitError("Padding values must be numeric seconds, for example `0.4,0.8`.") from exc
 
 
+def list_edit_presets() -> dict[str, dict[str, Any]]:
+    return {name: dict(values) for name, values in EDIT_PRESETS.items()}
+
+
+def resolve_edit_options(
+    *,
+    preset: str | None = None,
+    padding: str | None = None,
+    fuzzy_threshold: float | None = None,
+    max_silence: float | None = None,
+    merge_gap: float | None = None,
+    silence_threshold_db: float | None = None,
+    min_silence_duration: float | None = None,
+    weak_boundary_score: int | None = None,
+) -> dict[str, Any]:
+    options: dict[str, Any] = {
+        "padding": None,
+        "fuzzy_threshold": 0.6,
+        "max_silence": 0.2,
+        "merge_gap": 1.0,
+        "silence_threshold_db": REWRITE_AUDIO_SILENCE_DB,
+        "min_silence_duration": REWRITE_AUDIO_SILENCE_MIN_DURATION,
+        "weak_boundary_score": REWRITE_WEAK_BOUNDARY_SCORE,
+    }
+    if preset:
+        if preset not in EDIT_PRESETS:
+            raise ToolkitError(f"Unknown preset `{preset}`. Available presets: {', '.join(sorted(EDIT_PRESETS))}")
+        options.update(EDIT_PRESETS[preset])
+        options["preset"] = preset
+
+    overrides = {
+        "padding": padding,
+        "fuzzy_threshold": fuzzy_threshold,
+        "max_silence": max_silence,
+        "merge_gap": merge_gap,
+        "silence_threshold_db": silence_threshold_db,
+        "min_silence_duration": min_silence_duration,
+        "weak_boundary_score": weak_boundary_score,
+    }
+    for key, value in overrides.items():
+        if value is not None:
+            options[key] = value
+    return options
+
+
+def apply_padding_to_ranges(
+    ranges: list[dict[str, Any]],
+    input_duration: float,
+    padding_before: float,
+    padding_after: float,
+    merge_gap: float = 1.0,
+) -> list[dict[str, Any]]:
+    padded: list[dict[str, Any]] = []
+    for entry in ranges:
+        start = max(float(entry["start"]) - padding_before, 0.0)
+        end = min(float(entry["end"]) + padding_after, input_duration)
+        if end <= start:
+            continue
+        padded.append(
+            {
+                "start": start,
+                "end": max(end, start + 0.1),
+                "text": str(entry.get("text") or entry.get("label") or ""),
+                "segment_ids": list(entry.get("segment_ids", [])),
+            }
+        )
+
+    if not padded:
+        return []
+
+    padded.sort(key=lambda item: float(item["start"]))
+    merged: list[dict[str, Any]] = [padded[0]]
+    for current in padded[1:]:
+        previous = merged[-1]
+        if float(current["start"]) <= float(previous["end"]) + merge_gap:
+            previous["end"] = max(float(previous["end"]), float(current["end"]))
+            previous["text"] = " ".join(part for part in [str(previous.get("text", "")).strip(), str(current.get("text", "")).strip()] if part)
+            previous["segment_ids"] = list(previous.get("segment_ids", [])) + list(current.get("segment_ids", []))
+        else:
+            merged.append(current)
+
+    for index, entry in enumerate(merged, start=1):
+        entry["id"] = index
+        entry["duration"] = round(float(entry["end"]) - float(entry["start"]), 3)
+    return merged
+
+
 def normalize_match_text(text: str) -> str:
     lowered = text.casefold().replace("'", "")
     lowered = re.sub(r"[^a-z0-9\s]", " ", lowered)
@@ -602,37 +758,16 @@ def build_clip_ranges(
     padding_after: float,
     merge_gap: float = 1.0,
 ) -> list[dict[str, Any]]:
-    padded_ranges: list[dict[str, Any]] = []
-    for segment in selected_segments:
-        start = max(float(segment["start"]) - padding_before, 0.0)
-        end = min(float(segment["end"]) + padding_after, input_duration)
-        padded_ranges.append(
-            {
-                "start": start,
-                "end": max(end, start + 0.1),
-                "text": str(segment["text"]),
-                "segment_ids": [segment.get("id")],
-            }
-        )
-
-    if not padded_ranges:
-        return []
-
-    padded_ranges.sort(key=lambda item: float(item["start"]))
-    merged: list[dict[str, Any]] = [padded_ranges[0]]
-    for current in padded_ranges[1:]:
-        previous = merged[-1]
-        if float(current["start"]) <= float(previous["end"]) + merge_gap:
-            previous["end"] = max(float(previous["end"]), float(current["end"]))
-            previous["text"] = " ".join(part for part in [str(previous["text"]).strip(), str(current["text"]).strip()] if part).strip()
-            previous["segment_ids"] = list(previous["segment_ids"]) + list(current["segment_ids"])
-        else:
-            merged.append(current)
-
-    for index, clip_range in enumerate(merged, start=1):
-        clip_range["id"] = index
-        clip_range["duration"] = round(float(clip_range["end"]) - float(clip_range["start"]), 3)
-    return merged
+    ranges = [
+        {
+            "start": float(segment["start"]),
+            "end": float(segment["end"]),
+            "text": str(segment["text"]),
+            "segment_ids": [segment.get("id")],
+        }
+        for segment in selected_segments
+    ]
+    return apply_padding_to_ranges(ranges, input_duration, padding_before, padding_after, merge_gap=merge_gap)
 
 
 def load_manual_ranges(ranges_path: Path, input_duration: float) -> list[dict[str, Any]]:
@@ -776,6 +911,7 @@ def transcript_edit(
     ranges_path: Path | None = None,
     padding: str | None = None,
     fuzzy_threshold: float = 0.6,
+    merge_gap: float = 1.0,
     model_name: str | None = None,
 ) -> dict[str, Any]:
     input_duration = probe_duration(run_context.input_path)
@@ -785,8 +921,10 @@ def transcript_edit(
     transcribe_metadata: dict[str, Any] | None = None
 
     if ranges_path is not None:
-        clip_ranges = load_manual_ranges(ranges_path.expanduser().resolve(), input_duration)
-        padding_before, padding_after = parse_padding(padding)
+        raw_ranges = load_manual_ranges(ranges_path.expanduser().resolve(), input_duration)
+        padding_before, padding_after = parse_padding(padding, 0.0, 0.0)
+        manual_merge_gap = merge_gap if padding is not None else 0.0
+        clip_ranges = apply_padding_to_ranges(raw_ranges, input_duration, padding_before, padding_after, merge_gap=manual_merge_gap)
     else:
         if run_context.segments_path.exists():
             segments = load_segments(run_context)
@@ -798,7 +936,7 @@ def transcript_edit(
             selected_segments = select_segments_by_fuzzy_queries(segments, fuzzy_queries, fuzzy_threshold)
         else:
             selected_segments = select_segments_by_queries(segments, queries or [])
-        clip_ranges = build_clip_ranges(selected_segments, input_duration, padding_before, padding_after)
+        clip_ranges = build_clip_ranges(selected_segments, input_duration, padding_before, padding_after, merge_gap=merge_gap)
         if not clip_ranges:
             raise ToolkitError("No clip ranges were created from the selected transcript segments.")
 
@@ -832,6 +970,7 @@ def transcript_edit(
             "before": padding_before,
             "after": padding_after,
         },
+        "merge_gap": merge_gap,
         "selected_segment_count": len(selected_segments),
         "clip_count": len(clip_ranges),
         "artifacts": {
@@ -1295,6 +1434,7 @@ def build_rewrite_plan(
     *,
     max_silence_gap: float = 0.2,
     audio_silences: list[dict[str, float]] | None = None,
+    weak_boundary_score: int = REWRITE_WEAK_BOUNDARY_SCORE,
 ) -> tuple[str, Any, list[dict[str, float]]]:
     target_text, _target_source = resolve_rewrite_target_text(transcript_text=transcript_text)
     match_result = match_rewrite_words(words, target_text)
@@ -1304,10 +1444,243 @@ def build_rewrite_plan(
         anchored_word_ids=match_result.anchored_word_ids,
         max_silence_gap=max_silence_gap if max_silence_gap > 0 else None,
         audio_silences=audio_silences,
+        weak_boundary_score=weak_boundary_score,
     )
     if not clip_ranges:
         raise ToolkitError("The target transcript did not leave any exportable ranges.")
     return target_text, match_result, clip_ranges
+
+
+def build_word_match_rows(words: list[dict[str, Any]], match_result: Any) -> list[dict[str, Any]]:
+    kept_ids = set(match_result.kept_word_ids)
+    anchored_ids = set(match_result.anchored_word_ids)
+    return [
+        {
+            "id": int(word["id"]),
+            "word": str(word.get("word", "")),
+            "start": float(word["start"]),
+            "end": float(word["end"]),
+            "decision": "keep" if int(word["id"]) in kept_ids else "cut",
+            "anchored": int(word["id"]) in anchored_ids,
+        }
+        for word in words
+    ]
+
+
+def _gap_overlaps_silence(start: float, end: float, silences: list[dict[str, float]]) -> bool:
+    for silence in silences:
+        if max(0.0, min(end, float(silence["end"])) - max(start, float(silence["start"]))) > 0:
+            return True
+    return False
+
+
+def build_boundary_scores(words: list[dict[str, Any]], audio_silences: list[dict[str, float]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for index in range(len(words) - 1):
+        left = words[index]
+        right = words[index + 1]
+        gap_start = float(left["end"])
+        gap_end = float(right["start"])
+        rows.append(
+            {
+                "after_word_id": int(left["id"]),
+                "before_word_id": int(right["id"]),
+                "left_word": str(left.get("word", "")),
+                "right_word": str(right.get("word", "")),
+                "gap_start": gap_start,
+                "gap_end": gap_end,
+                "gap_duration": round(max(0.0, gap_end - gap_start), 3),
+                "score": score_boundary(words, index, index + 1),
+                "overlaps_detected_silence": _gap_overlaps_silence(gap_start, gap_end, audio_silences),
+            }
+        )
+    return rows
+
+
+def build_match_summary(match_result: Any) -> dict[str, int]:
+    return {
+        "source_word_count": match_result.source_word_count,
+        "target_token_count": match_result.target_token_count,
+        "kept_word_count": match_result.kept_word_count,
+        "cut_word_count": len(match_result.cut_word_ids),
+        "matched_target_count": match_result.matched_target_count,
+        "unmatched_target_token_count": len(match_result.unmatched_target_tokens),
+    }
+
+
+def generate_decision_report_html(plan: dict[str, Any]) -> str:
+    def esc(value: object) -> str:
+        return _html.escape(str(value))
+
+    word_rows = []
+    for word in plan.get("word_matches", []):
+        klass = "keep" if word.get("decision") == "keep" else "cut"
+        anchored = " anchored" if word.get("anchored") else ""
+        word_rows.append(
+            f'<span class="word {klass}{anchored}" title="{word["start"]:.3f}-{word["end"]:.3f}">{esc(word["word"])}</span>'
+        )
+
+    range_rows = []
+    for item in plan.get("clip_ranges", []):
+        range_rows.append(
+            "<tr>"
+            f"<td>{int(item.get('id', 0))}</td>"
+            f"<td>{float(item['start']):.3f}</td>"
+            f"<td>{float(item['end']):.3f}</td>"
+            f"<td>{float(item.get('duration', float(item['end']) - float(item['start']))):.3f}</td>"
+            f"<td>{esc(item.get('text', ''))}</td>"
+            "</tr>"
+        )
+
+    boundary_rows = []
+    for item in plan.get("boundary_scores", []):
+        if item.get("score", 0) <= plan.get("options", {}).get("weak_boundary_score", 0) and not item.get("overlaps_detected_silence"):
+            continue
+        boundary_rows.append(
+            "<tr>"
+            f"<td>{esc(item['left_word'])} / {esc(item['right_word'])}</td>"
+            f"<td>{float(item['gap_duration']):.3f}</td>"
+            f"<td>{int(item['score'])}</td>"
+            f"<td>{'yes' if item.get('overlaps_detected_silence') else 'no'}</td>"
+            "</tr>"
+        )
+
+    artifacts = plan.get("artifacts", {})
+    artifact_links = "".join(
+        f'<li><a href="{esc(Path(path).name)}">{esc(name)}</a></li>'
+        for name, path in artifacts.items()
+        if path and Path(str(path)).name
+    )
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Edit Decision Report</title>
+<style>
+body {{ font-family: system-ui, sans-serif; margin: 24px; line-height: 1.45; color: #202124; }}
+h1, h2 {{ margin: 0 0 12px; }}
+section {{ margin: 24px 0; }}
+table {{ border-collapse: collapse; width: 100%; font-size: 13px; }}
+th, td {{ border-bottom: 1px solid #ddd; padding: 7px 8px; text-align: left; vertical-align: top; }}
+.transcript {{ max-width: 980px; }}
+.word {{ display: inline-block; margin: 2px 2px 2px 0; padding: 1px 4px; border-radius: 4px; }}
+.word.keep {{ background: #dff3df; }}
+.word.cut {{ background: #f6dddd; color: #8a2525; text-decoration: line-through; }}
+.word.anchored {{ outline: 2px solid #6aa36a; }}
+.meta {{ color: #5f6368; font-size: 13px; }}
+code {{ background: #f1f3f4; padding: 2px 4px; border-radius: 3px; }}
+</style>
+</head>
+<body>
+<h1>Edit Decision Report</h1>
+<p class="meta">Workflow: <code>{esc(plan.get("workflow"))}</code> · Source: <code>{esc(plan.get("source_path"))}</code></p>
+<section>
+<h2>Artifacts</h2>
+<ul>{artifact_links}</ul>
+</section>
+<section>
+<h2>Proposed Transcript Decisions</h2>
+<div class="transcript">{" ".join(word_rows)}</div>
+</section>
+<section>
+<h2>Clip Ranges</h2>
+<table><thead><tr><th>#</th><th>Start</th><th>End</th><th>Duration</th><th>Text</th></tr></thead><tbody>{"".join(range_rows)}</tbody></table>
+</section>
+<section>
+<h2>Boundary / Silence Signals</h2>
+<table><thead><tr><th>Boundary</th><th>Gap</th><th>Score</th><th>Silence</th></tr></thead><tbody>{"".join(boundary_rows)}</tbody></table>
+</section>
+</body>
+</html>"""
+
+
+def plan_rewrite_edit(
+    config: AppConfig,
+    run_context: RunContext,
+    *,
+    transcript_text: str | None = None,
+    transcript_path: Path | None = None,
+    model_name: str | None = None,
+    padding: str | None = None,
+    max_silence_gap: float = 0.2,
+    silence_threshold_db: float = REWRITE_AUDIO_SILENCE_DB,
+    min_silence_duration: float = REWRITE_AUDIO_SILENCE_MIN_DURATION,
+    merge_gap: float = 1.0,
+    weak_boundary_score: int = REWRITE_WEAK_BOUNDARY_SCORE,
+    preset: str | None = None,
+    notes: str | None = None,
+) -> dict[str, Any]:
+    target_text, target_source = resolve_rewrite_target_text(
+        transcript_text=transcript_text,
+        transcript_path=transcript_path,
+    )
+    run_context.rewrite_target_path.write_text(target_text + "\n")
+
+    words, segments, transcribe_metadata = transcribe_words(config, run_context, model_name=model_name)
+    audio_silences = detect_audio_silences(
+        run_context.audio_path,
+        noise_db=silence_threshold_db,
+        min_duration=min_silence_duration,
+    )
+    _resolved_target_text, match_result, ranges = build_rewrite_plan(
+        words,
+        target_text,
+        max_silence_gap=max_silence_gap,
+        audio_silences=audio_silences,
+        weak_boundary_score=weak_boundary_score,
+    )
+    padding_before, padding_after = parse_padding(padding, 0.0, 0.0)
+    input_duration = probe_duration(run_context.input_path)
+    clip_ranges = apply_padding_to_ranges(ranges, input_duration, padding_before, padding_after, merge_gap=merge_gap)
+
+    run_context.generated_ranges_path.write_text(json.dumps(ranges, indent=2))
+    run_context.clip_ranges_path.write_text(json.dumps(clip_ranges, indent=2))
+
+    plan: dict[str, Any] = {
+        "step": "plan-edit",
+        "workflow": "rewrite-edit",
+        "source_path": str(run_context.input_path),
+        "target_transcript_source": target_source,
+        "preset": preset,
+        "notes": notes,
+        "options": {
+            "model": model_name or config.whisper.model_name,
+            "padding": {"before": padding_before, "after": padding_after},
+            "max_silence_gap": max_silence_gap,
+            "merge_gap": merge_gap,
+            "silence_threshold_db": silence_threshold_db,
+            "min_silence_duration": min_silence_duration,
+            "weak_boundary_score": weak_boundary_score,
+        },
+        "match_summary": build_match_summary(match_result),
+        "unmatched_target_tokens": match_result.unmatched_target_tokens,
+        "word_matches": build_word_match_rows(words, match_result),
+        "silences": audio_silences,
+        "boundary_scores": build_boundary_scores(words, audio_silences),
+        "ranges": ranges,
+        "clip_ranges": clip_ranges,
+        "clip_count": len(clip_ranges),
+        "artifacts": {
+            "target_transcript": str(run_context.rewrite_target_path),
+            "word_segments": str(run_context.word_segments_path),
+            "ranges": str(run_context.generated_ranges_path),
+            "clip_ranges": str(run_context.clip_ranges_path),
+            "edit_plan": str(run_context.edit_plan_path),
+            "decision_report": str(run_context.decision_report_path),
+        },
+    }
+    if run_context.transcript_path.exists():
+        plan["artifacts"]["transcript"] = str(run_context.transcript_path)
+    if run_context.segments_path.exists():
+        plan["artifacts"]["segments"] = str(run_context.segments_path)
+        plan["segment_count"] = len(segments)
+    if transcribe_metadata:
+        plan["transcribe"] = transcribe_metadata
+
+    run_context.edit_plan_path.write_text(json.dumps(plan, indent=2))
+    run_context.decision_report_path.write_text(generate_decision_report_html(plan))
+    return plan
 
 
 def rewrite_edit(
@@ -1319,71 +1692,73 @@ def rewrite_edit(
     model_name: str | None = None,
     padding: str | None = None,
     max_silence_gap: float = 0.2,
+    silence_threshold_db: float = REWRITE_AUDIO_SILENCE_DB,
+    min_silence_duration: float = REWRITE_AUDIO_SILENCE_MIN_DURATION,
+    merge_gap: float = 1.0,
+    weak_boundary_score: int = REWRITE_WEAK_BOUNDARY_SCORE,
+    preset: str | None = None,
+    notes: str | None = None,
 ) -> dict[str, Any]:
-    target_text, target_source = resolve_rewrite_target_text(
+    plan = plan_rewrite_edit(
+        config,
+        run_context,
         transcript_text=transcript_text,
         transcript_path=transcript_path,
-    )
-    run_context.rewrite_target_path.write_text(target_text + "\n")
-
-    words, segments, transcribe_metadata = transcribe_words(config, run_context, model_name=model_name)
-    audio_silence_min_duration = min(max(max_silence_gap, 0.0), REWRITE_AUDIO_SILENCE_MIN_DURATION) or REWRITE_AUDIO_SILENCE_MIN_DURATION
-    audio_silences = detect_audio_silences(
-        run_context.audio_path,
-        noise_db=REWRITE_AUDIO_SILENCE_DB,
-        min_duration=audio_silence_min_duration,
-    )
-    _resolved_target_text, match_result, clip_ranges = build_rewrite_plan(
-        words,
-        target_text,
+        model_name=model_name,
+        padding=padding,
         max_silence_gap=max_silence_gap,
-        audio_silences=audio_silences,
+        silence_threshold_db=silence_threshold_db,
+        min_silence_duration=min_silence_duration,
+        merge_gap=merge_gap,
+        weak_boundary_score=weak_boundary_score,
+        preset=preset,
+        notes=notes,
     )
-
-    run_context.generated_ranges_path.write_text(json.dumps(clip_ranges, indent=2))
     transcript_edit_metadata = transcript_edit(
         config,
         run_context,
         ranges_path=run_context.generated_ranges_path,
-        padding=padding,
+        padding=padding if padding is not None or merge_gap == 1.0 else "0,0",
+        merge_gap=merge_gap,
     )
 
     metadata: dict[str, Any] = {
         "step": "rewrite-edit",
-        "target_transcript_source": target_source,
-        "clip_count": int(transcript_edit_metadata.get("clip_count", len(clip_ranges))),
-        "match_summary": {
-            "source_word_count": match_result.source_word_count,
-            "target_token_count": match_result.target_token_count,
-            "kept_word_count": match_result.kept_word_count,
-            "cut_word_count": len(match_result.cut_word_ids),
-            "matched_target_count": match_result.matched_target_count,
-            "unmatched_target_token_count": len(match_result.unmatched_target_tokens),
-        },
+        "target_transcript_source": plan["target_transcript_source"],
+        "clip_count": int(transcript_edit_metadata.get("clip_count", plan["clip_count"])),
+        "match_summary": plan["match_summary"],
         "max_silence_gap": max_silence_gap,
+        "merge_gap": merge_gap,
         "audio_silence_detection": {
-            "noise_db": REWRITE_AUDIO_SILENCE_DB,
-            "min_duration": audio_silence_min_duration,
-            "silence_count": len(audio_silences),
+            "noise_db": silence_threshold_db,
+            "min_duration": min_silence_duration,
+            "silence_count": len(plan["silences"]),
         },
         "artifacts": {
             "target_transcript": str(run_context.rewrite_target_path),
             "word_segments": str(run_context.word_segments_path),
             "ranges": str(run_context.generated_ranges_path),
             "clip_ranges": str(run_context.clip_ranges_path),
+            "edit_plan": str(run_context.edit_plan_path),
+            "decision_report": str(run_context.decision_report_path),
             "transcript_edit": str(run_context.transcript_edit_path),
         },
+        "plan": str(run_context.edit_plan_path),
         "transcript_edit": transcript_edit_metadata,
     }
-    if match_result.unmatched_target_tokens:
-        metadata["unmatched_target_tokens"] = match_result.unmatched_target_tokens
+    if preset:
+        metadata["preset"] = preset
+    if notes:
+        metadata["notes"] = notes
+    if plan["unmatched_target_tokens"]:
+        metadata["unmatched_target_tokens"] = plan["unmatched_target_tokens"]
     if run_context.transcript_path.exists():
         metadata["artifacts"]["transcript"] = str(run_context.transcript_path)
     if run_context.segments_path.exists():
         metadata["artifacts"]["segments"] = str(run_context.segments_path)
-        metadata["segment_count"] = len(segments)
-    if transcribe_metadata:
-        metadata["transcribe"] = transcribe_metadata
+        metadata["segment_count"] = plan.get("segment_count", 0)
+    if plan.get("transcribe"):
+        metadata["transcribe"] = plan["transcribe"]
 
     write_run_metadata(run_context, metadata)
     return metadata

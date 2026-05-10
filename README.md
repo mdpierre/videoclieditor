@@ -17,6 +17,14 @@ toolkit rewrite-edit /path/to/input.mp4 --transcript "clean final draft transcri
 cat final_draft.txt | toolkit rewrite-edit /path/to/input.mp4 --stdin
 ```
 
+Preview the edit without rendering:
+
+```bash
+toolkit plan-edit /path/to/input.mp4 --transcript-file final_draft.txt --preset tight-social-clip
+```
+
+`plan-edit` writes `edit_plan.json` and `decision_report.html` in the run folder. The JSON includes proposed word keep/cut decisions, detected silences, boundary scores, raw ranges, and padded clip ranges, so an agent can explain or adjust the edit before spending time on ffmpeg.
+
 That flow will:
 
 - ensure word-level transcription exists
@@ -24,6 +32,35 @@ That flow will:
 - convert the kept words into exportable ranges
 - render a final `transcript_edit.mp4`
 - write machine-friendly metadata into `run.json`
+
+Named presets are available for common edit styles:
+
+```bash
+toolkit presets
+toolkit rewrite-edit /path/to/input.mp4 --transcript-file final_draft.txt --preset sermon-excerpt
+```
+
+Presets can still be overridden with explicit flags like `--padding`, `--max-silence`, `--merge-gap`, `--silence-threshold-db`, `--min-silence-duration`, and `--weak-boundary-score`.
+
+For agent handoffs, use a structured JSON request:
+
+```bash
+toolkit request-schema
+toolkit edit-request request.json
+```
+
+Example request:
+
+```json
+{
+  "source_path": "/path/to/input.mp4",
+  "workflow": "rewrite-edit",
+  "target_transcript_path": "final_draft.txt",
+  "preset": "gentle-talking-head-cleanup",
+  "output_style": "plan",
+  "notes": "Inspect before rendering."
+}
+```
 
 Use `rewrite-edit` when:
 
