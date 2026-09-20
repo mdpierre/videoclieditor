@@ -126,6 +126,16 @@ def build_parser() -> argparse.ArgumentParser:
             cmd_parser.add_argument("--weak-boundary-score", type=int, help="Only split detected silence when boundary score is greater than this value.")
             cmd_parser.add_argument("--notes", help="Operator notes saved in run metadata.")
             cmd_parser.add_argument(
+                "--vad",
+                choices=("silero", "ffmpeg"),
+                help="Override the configured VAD backend for this run only.",
+            )
+            cmd_parser.add_argument(
+                "--no-scene-snap",
+                action="store_true",
+                help="Disable scene detection and boundary snapping for this run only.",
+            )
+            cmd_parser.add_argument(
                 "--json",
                 action="store_true",
                 help="Print machine-friendly JSON output. This is already the default output format.",
@@ -146,6 +156,16 @@ def build_parser() -> argparse.ArgumentParser:
     plan_parser.add_argument("--min-silence-duration", type=float, help="Minimum silencedetect silence duration in seconds. Default: 0.2.")
     plan_parser.add_argument("--weak-boundary-score", type=int, help="Only split detected silence when boundary score is greater than this value.")
     plan_parser.add_argument("--notes", help="Operator notes saved in the plan.")
+    plan_parser.add_argument(
+        "--vad",
+        choices=("silero", "ffmpeg"),
+        help="Override the configured VAD backend for this run only.",
+    )
+    plan_parser.add_argument(
+        "--no-scene-snap",
+        action="store_true",
+        help="Disable scene detection and boundary snapping for this run only.",
+    )
 
     we_parser = subparsers.add_parser("word-editor", help="Open browser word-level editor — select and delete words to cut them.")
     we_parser.add_argument("input", type=Path, help="Path to the source media file.")
@@ -387,6 +407,8 @@ def handle_plan_edit(project_root: Path) -> int:
         weak_boundary_score=options["weak_boundary_score"],
         preset=options.get("preset"),
         notes=getattr(args(), "notes", None),
+        vad_backend_override=getattr(args(), "vad", None),
+        scene_detection_override=(False if getattr(args(), "no_scene_snap", False) else None),
     )
     write_run_metadata(run_context, metadata)
     print_json({"run_dir": str(run_context.run_dir), **metadata})
@@ -414,6 +436,8 @@ def handle_rewrite_edit(project_root: Path) -> int:
         weak_boundary_score=options["weak_boundary_score"],
         preset=options.get("preset"),
         notes=getattr(args(), "notes", None),
+        vad_backend_override=getattr(args(), "vad", None),
+        scene_detection_override=(False if getattr(args(), "no_scene_snap", False) else None),
     )
     write_run_metadata(run_context, metadata)
     print_json({"run_dir": str(run_context.run_dir), **metadata})

@@ -916,19 +916,24 @@ def resolve_silences(
     silence_threshold_db: float,
     min_silence_duration: float,
     speech_regions_out: list[dict[str, float]] | None = None,
+    vad_backend: str | None = None,
 ) -> tuple[list[dict[str, float]], str]:
     """Resolve non-speech regions for rewrite planning.
 
-    Prefers Silero VAD (ONNX) when `config.analysis.vad_backend == "silero"`.
-    Falls back to ffmpeg `silencedetect` when Silero is disabled, unavailable,
-    or fails to produce a result. Never raises: `detect_speech_regions_silero`
-    already guards its own failures and returns `None` on any problem.
+    Prefers Silero VAD (ONNX) when the effective backend is `"silero"`. The
+    effective backend is `vad_backend` when given, otherwise
+    `config.analysis.vad_backend` (this lets callers apply a per-run override,
+    e.g. a `--vad` CLI flag, without mutating the frozen config). Falls back
+    to ffmpeg `silencedetect` when Silero is disabled, unavailable, or fails
+    to produce a result. Never raises: `detect_speech_regions_silero` already
+    guards its own failures and returns `None` on any problem.
 
     When `speech_regions_out` is provided, the raw Silero speech regions (if
     any were found) are appended to it so callers can surface them separately
     from the derived silences; it is left untouched on the ffmpeg path.
     """
-    if config.analysis.vad_backend == "silero":
+    effective_backend = vad_backend if vad_backend is not None else config.analysis.vad_backend
+    if effective_backend == "silero":
         speech_regions = detect_speech_regions_silero(
             run_context.audio_path,
             model_path=config.silero_model_path,
@@ -1584,6 +1589,7 @@ def generate_decision_report_html(plan: dict[str, Any]) -> str:
             ("Matched Target", f"{summary.get('matched_target_count', 0)}/{summary.get('target_token_count', 0)}"),
             ("Clip Time", f"{clip_duration:.3f}s"),
             ("Detected Silence", f"{silence_duration:.3f}s"),
+            ("VAD Backend", plan.get("vad_backend", "ffmpeg")),
         )
     )
 
@@ -1625,6 +1631,22 @@ def generate_decision_report_html(plan: dict[str, Any]) -> str:
             f"<td>{float(item.get('duration', float(item['end']) - float(item['start']))):.3f}</td>"
             "</tr>"
         )
+
+    scene_snap_rows = []
+    for item in plan.get("scene_snaps", []):
+        scene_snap_rows.append(
+            "<tr>"
+            f"<td>{esc(item.get('edge', ''))}</td>"
+            f"<td>{int(item.get('clip_index', 0))}</td>"
+            f"<td>{float(item.get('from', 0.0)):.3f} → {float(item.get('to', 0.0)):.3f}</td>"
+            f"<td>{float(item.get('boundary', 0.0)):.3f}</td>"
+            "</tr>"
+        )
+    scene_snap_body = (
+        "".join(scene_snap_rows)
+        if scene_snap_rows
+        else '<tr><td colspan="4" class="empty">No scene snaps.</td></tr>'
+    )
 
     boundary_rows = []
     for item in plan.get("boundary_scores", []):
@@ -1679,7 +1701,7 @@ a:hover {{ text-decoration: underline; }}
 code {{ background: #f0eee7; padding: 2px 4px; border-radius: 4px; overflow-wrap: anywhere; }}
 .meta {{ color: #5f6368; font-size: 13px; margin: 0; overflow-wrap: anywhere; }}
 .pill {{ display: inline-flex; align-items: center; border: 1px solid #cfc9bc; border-radius: 999px; padding: 5px 9px; font-size: 12px; background: #fff; white-space: nowrap; }}
-.metrics {{ display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; margin-bottom: 18px; }}
+.metrics {{ display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 10px; margin-bottom: 18px; }}
 .metric {{ background: #fff; border: 1px solid #dedbd2; border-radius: 8px; padding: 12px; min-width: 0; }}
 .metric span {{ display: block; color: #6a665d; font-size: 12px; margin-bottom: 4px; }}
 .metric strong {{ display: block; font-size: 20px; line-height: 1.1; }}
@@ -1697,6 +1719,7 @@ code {{ background: #f0eee7; padding: 2px 4px; border-radius: 4px; overflow-wrap
 .signal {{ display: inline-flex; border-radius: 999px; padding: 2px 7px; font-size: 12px; }}
 .signal.silence {{ background: #e4eaf6; color: #29466f; }}
 .signal.boundary {{ background: #ece7dc; color: #5b5143; }}
+.empty {{ color: #8a857a; font-style: italic; }}
 @media (max-width: 860px) {{
   header, .grid {{ display: block; }}
   .metrics {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
@@ -1739,6 +1762,10 @@ code {{ background: #f0eee7; padding: 2px 4px; border-radius: 4px; overflow-wrap
 <table><thead><tr><th>#</th><th>Start</th><th>End</th><th>Duration</th></tr></thead><tbody>{"".join(silence_rows)}</tbody></table>
 </section>
 <section>
+<h2>Scene Snaps</h2>
+<table><thead><tr><th>Edge</th><th>Clip</th><th>From → To</th><th>Boundary</th></tr></thead><tbody>{scene_snap_body}</tbody></table>
+</section>
+<section>
 <h2>Boundary / Silence Signals</h2>
 <table><thead><tr><th>Boundary</th><th>Gap</th><th>Score</th><th>Silence</th></tr></thead><tbody>{"".join(boundary_rows)}</tbody></table>
 </section>
@@ -1762,6 +1789,8 @@ def plan_rewrite_edit(
     weak_boundary_score: int = REWRITE_WEAK_BOUNDARY_SCORE,
     preset: str | None = None,
     notes: str | None = None,
+    vad_backend_override: str | None = None,
+    scene_detection_override: bool | None = None,
 ) -> dict[str, Any]:
     target_text, target_source = resolve_rewrite_target_text(
         transcript_text=transcript_text,
@@ -1777,11 +1806,15 @@ def plan_rewrite_edit(
         silence_threshold_db=silence_threshold_db,
         min_silence_duration=min_silence_duration,
         speech_regions_out=speech_regions,
+        vad_backend=vad_backend_override,
     )
 
+    effective_scene_detection = (
+        scene_detection_override if scene_detection_override is not None else config.analysis.scene_detection
+    )
     scene_boundaries: list[float] = []
     scene_boundaries_path: Path | None = None
-    if config.analysis.scene_detection:
+    if effective_scene_detection:
         scene_boundaries = detect_scene_boundaries(
             run_context.input_path,
             threshold=config.analysis.scene_threshold,
@@ -1878,6 +1911,8 @@ def rewrite_edit(
     weak_boundary_score: int = REWRITE_WEAK_BOUNDARY_SCORE,
     preset: str | None = None,
     notes: str | None = None,
+    vad_backend_override: str | None = None,
+    scene_detection_override: bool | None = None,
 ) -> dict[str, Any]:
     plan = plan_rewrite_edit(
         config,
@@ -1893,6 +1928,8 @@ def rewrite_edit(
         weak_boundary_score=weak_boundary_score,
         preset=preset,
         notes=notes,
+        vad_backend_override=vad_backend_override,
+        scene_detection_override=scene_detection_override,
     )
     transcript_edit_metadata = transcript_edit(
         config,

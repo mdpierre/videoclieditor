@@ -626,6 +626,10 @@ def test_plan_rewrite_edit_writes_inspectable_artifacts() -> None:
     assert "Detected Silences" in report_html
     assert "Matched Target" in report_html
     assert "clip-001.mp4" in report_html
+    assert "Scene Snaps" in report_html
+    assert "No scene snaps." in report_html
+    assert "VAD Backend" in report_html
+    assert "<strong>ffmpeg</strong>" in report_html
 
 
 def test_plan_rewrite_edit_falls_back_to_ffmpeg_when_silero_unavailable() -> None:
@@ -780,6 +784,11 @@ def test_plan_rewrite_edit_snaps_ranges_to_scene_boundaries() -> None:
     assert snap == {"edge": "start", "clip_index": 1, "from": 0.7, "to": 0.68, "boundary": 0.68}
     assert plan["ranges"][1]["start"] == pytest.approx(0.68)
 
+    report_html = run_context.decision_report_path.read_text()
+    assert "Scene Snaps" in report_html
+    assert "<td>start</td>" in report_html
+    assert "0.700 → 0.680" in report_html
+
 
 def test_rewrite_edit_builds_ranges_renders_video_and_writes_run_metadata(tmp_path: Path) -> None:
     config = load_config(PROJECT_ROOT)
@@ -911,12 +920,59 @@ def test_handle_rewrite_edit_reads_stdin_and_prints_json(capsys: object) -> None
         weak_boundary_score=0,
         preset=None,
         notes=None,
+        vad_backend_override=None,
+        scene_detection_override=None,
     )
     write_run_metadata_mock.assert_called_once()
     payload = json.loads(capsys.readouterr().out)
     assert payload["run_dir"] == str(run_context.run_dir)
     assert payload["step"] == "rewrite-edit"
     assert payload["clip_count"] == 2
+
+
+def test_handle_rewrite_edit_threads_vad_and_no_scene_snap_overrides(capsys: object) -> None:
+    config = load_config(PROJECT_ROOT)
+    run_context = create_run_context(config, Path("/tmp/sample.mp4"), run_id="test-handle-rewrite-overrides")
+    fake_args = SimpleNamespace(
+        input=Path("/tmp/sample.mp4"),
+        transcript_file=None,
+        transcript="hello final draft",
+        stdin=False,
+        model=None,
+        padding=None,
+        max_silence=None,
+        merge_gap=None,
+        preset=None,
+        silence_threshold_db=None,
+        min_silence_duration=None,
+        weak_boundary_score=None,
+        notes=None,
+        json=True,
+        vad="ffmpeg",
+        no_scene_snap=True,
+    )
+
+    with (
+        patch.object(cli_module, "_ARGS", fake_args),
+        patch("video_cli_toolkit.cli.load_config", return_value=config),
+        patch("video_cli_toolkit.cli.ensure_input_exists"),
+        patch("video_cli_toolkit.cli.create_run_context", return_value=run_context),
+        patch(
+            "video_cli_toolkit.cli.rewrite_edit",
+            return_value={
+                "step": "rewrite-edit",
+                "clip_count": 1,
+                "artifacts": {"transcript_edit": str(run_context.transcript_edit_path)},
+            },
+        ) as rewrite_edit_mock,
+        patch("video_cli_toolkit.cli.write_run_metadata"),
+    ):
+        exit_code = cli_module.handle_rewrite_edit(PROJECT_ROOT)
+
+    assert exit_code == 0
+    _, call_kwargs = rewrite_edit_mock.call_args
+    assert call_kwargs["vad_backend_override"] == "ffmpeg"
+    assert call_kwargs["scene_detection_override"] is False
 
 
 def test_doctor_tolerates_optional_import_timeout(tmp_path: Path) -> None:
