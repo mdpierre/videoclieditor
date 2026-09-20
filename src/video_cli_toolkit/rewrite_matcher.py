@@ -359,7 +359,27 @@ def _is_weak_cut(words: list[dict[str, Any]], left_index: int, right_index: int)
     return _boundary_score(words, left_index, right_index) <= 0
 
 
-def _boundary_score(words: list[dict[str, Any]], left_index: int, right_index: int) -> int:
+def _gap_near_scene_boundary(
+    gap_start: float,
+    gap_end: float,
+    scene_boundaries: list[float],
+    *,
+    scene_tolerance: float,
+) -> bool:
+    lower = gap_start - scene_tolerance
+    upper = gap_end + scene_tolerance
+    return any(lower <= boundary <= upper for boundary in scene_boundaries)
+
+
+def _boundary_score(
+    words: list[dict[str, Any]],
+    left_index: int,
+    right_index: int,
+    *,
+    scene_boundaries: list[float] | None = None,
+    scene_tolerance: float = 0.22,
+    scene_bonus: int = 2,
+) -> int:
     left_word = str(words[left_index].get("word", "")).rstrip()
     right_word = str(words[right_index].get("word", "")).rstrip()
     left_token = _boundary_word_token(words[left_index])
@@ -383,11 +403,34 @@ def _boundary_score(words: list[dict[str, Any]], left_index: int, right_index: i
     if gap_duration >= 0.5:
         score += 1
 
+    if scene_boundaries and _gap_near_scene_boundary(
+        float(words[left_index]["end"]),
+        float(words[right_index]["start"]),
+        scene_boundaries,
+        scene_tolerance=scene_tolerance,
+    ):
+        score += scene_bonus
+
     return score
 
 
-def score_boundary(words: list[dict[str, Any]], left_index: int, right_index: int) -> int:
-    return _boundary_score(words, left_index, right_index)
+def score_boundary(
+    words: list[dict[str, Any]],
+    left_index: int,
+    right_index: int,
+    *,
+    scene_boundaries: list[float] | None = None,
+    scene_tolerance: float = 0.22,
+    scene_bonus: int = 2,
+) -> int:
+    return _boundary_score(
+        words,
+        left_index,
+        right_index,
+        scene_boundaries=scene_boundaries,
+        scene_tolerance=scene_tolerance,
+        scene_bonus=scene_bonus,
+    )
 
 
 def _build_kept_runs(words: list[dict[str, Any]], kept_word_ids: set[int]) -> list[tuple[int, int]]:
@@ -499,6 +542,9 @@ def _should_split_at_gap(
     max_silence_gap: float,
     audio_silences: list[dict[str, float]] | None,
     weak_boundary_score: int = 0,
+    scene_boundaries: list[float] | None = None,
+    scene_tolerance: float = 0.22,
+    scene_bonus: int = 2,
 ) -> bool:
     if not _gap_matches_audio_silence(
         words,
@@ -508,7 +554,17 @@ def _should_split_at_gap(
         audio_silences=audio_silences,
     ):
         return False
-    return _boundary_score(words, left_index, right_index) > weak_boundary_score
+    return (
+        _boundary_score(
+            words,
+            left_index,
+            right_index,
+            scene_boundaries=scene_boundaries,
+            scene_tolerance=scene_tolerance,
+            scene_bonus=scene_bonus,
+        )
+        > weak_boundary_score
+    )
 
 
 def _snap_start_index(words: list[dict[str, Any]], start_index: int, *, lookaround_words: int, pause_gap: float) -> int:
@@ -545,6 +601,9 @@ def build_ranges_from_kept_word_ids(
     max_silence_gap: float | None = None,
     audio_silences: list[dict[str, float]] | None = None,
     weak_boundary_score: int = 0,
+    scene_boundaries: list[float] | None = None,
+    scene_tolerance: float = 0.22,
+    scene_bonus: int = 2,
 ) -> list[dict[str, float]]:
     kept_word_id_set = set(kept_word_ids)
     anchored_word_id_set = set(anchored_word_ids or [])
@@ -566,6 +625,9 @@ def build_ranges_from_kept_word_ids(
                     max_silence_gap=max_silence_gap,
                     audio_silences=audio_silences,
                     weak_boundary_score=weak_boundary_score,
+                    scene_boundaries=scene_boundaries,
+                    scene_tolerance=scene_tolerance,
+                    scene_bonus=scene_bonus,
                 )
             ):
                 raw_runs.append((current_start, previous_kept_index))
@@ -632,6 +694,9 @@ def build_ranges_from_kept_word_ids(
                 max_silence_gap=max_silence_gap,
                 audio_silences=audio_silences,
                 weak_boundary_score=weak_boundary_score,
+                scene_boundaries=scene_boundaries,
+                scene_tolerance=scene_tolerance,
+                scene_bonus=scene_bonus,
             )
         )
         if not merged_runs or (start_index > merged_runs[-1][1] + 1 and not bridge_cut_gap) or split_on_silence:
