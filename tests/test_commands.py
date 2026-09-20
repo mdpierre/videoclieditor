@@ -293,6 +293,8 @@ def test_apply_word_editor_rewrite_uses_shared_python_matcher() -> None:
     }
     assert result["max_silence_gap"] == 0.2
     assert result["audio_silence_detection"]["silence_count"] == 0
+    assert result["vad_backend"] == "ffmpeg"
+    assert result["audio_silence_detection"]["vad_backend"] == "ffmpeg"
     assert Path(result["target_transcript"]) == run_context.rewrite_target_path
     assert run_context.rewrite_target_path.read_text() == "hello chapter sixteen\n"
 
@@ -612,6 +614,10 @@ def test_plan_rewrite_edit_writes_inspectable_artifacts() -> None:
     assert [word["decision"] for word in plan["word_matches"]] == ["keep", "cut", "keep", "keep"]
     assert plan["silences"] == [{"start": 0.4, "end": 0.7, "duration": 0.3}]
     assert plan["options"]["silence_threshold_db"] == -32.0
+    assert plan["vad_backend"] == "ffmpeg"
+    assert plan["speech_regions"] == []
+    assert plan["scene_boundaries"] == []
+    assert plan["scene_snaps"] == []
     assert run_context.edit_plan_path.exists()
     assert run_context.decision_report_path.exists()
     report_html = run_context.decision_report_path.read_text()

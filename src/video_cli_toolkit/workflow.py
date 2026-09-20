@@ -16,6 +16,12 @@ import threading
 from typing import Any
 import webbrowser
 
+from .analysis import (
+    detect_scene_boundaries,
+    detect_speech_regions_silero,
+    snap_ranges_to_scene_boundaries,
+    speech_regions_to_silences,
+)
 from .config import AppConfig
 from .rewrite_matcher import build_ranges_from_kept_word_ids, match_rewrite_words, score_boundary
 
@@ -903,6 +909,45 @@ def detect_audio_silences(
     return parse_silencedetect_output(process.stderr, audio_duration)
 
 
+def resolve_silences(
+    config: AppConfig,
+    run_context: RunContext,
+    *,
+    silence_threshold_db: float,
+    min_silence_duration: float,
+    speech_regions_out: list[dict[str, float]] | None = None,
+) -> tuple[list[dict[str, float]], str]:
+    """Resolve non-speech regions for rewrite planning.
+
+    Prefers Silero VAD (ONNX) when `config.analysis.vad_backend == "silero"`.
+    Falls back to ffmpeg `silencedetect` when Silero is disabled, unavailable,
+    or fails to produce a result. Never raises: `detect_speech_regions_silero`
+    already guards its own failures and returns `None` on any problem.
+
+    When `speech_regions_out` is provided, the raw Silero speech regions (if
+    any were found) are appended to it so callers can surface them separately
+    from the derived silences; it is left untouched on the ffmpeg path.
+    """
+    if config.analysis.vad_backend == "silero":
+        speech_regions = detect_speech_regions_silero(
+            run_context.audio_path,
+            model_path=config.silero_model_path,
+        )
+        if speech_regions is not None:
+            if speech_regions_out is not None:
+                speech_regions_out.extend(speech_regions)
+            audio_duration = probe_duration(run_context.audio_path)
+            silences = speech_regions_to_silences(speech_regions, audio_duration)
+            return silences, "silero"
+
+    silences = detect_audio_silences(
+        run_context.audio_path,
+        noise_db=silence_threshold_db,
+        min_duration=min_silence_duration,
+    )
+    return silences, "ffmpeg"
+
+
 def transcript_edit(
     config: AppConfig,
     run_context: RunContext,
@@ -1435,6 +1480,9 @@ def build_rewrite_plan(
     max_silence_gap: float = 0.2,
     audio_silences: list[dict[str, float]] | None = None,
     weak_boundary_score: int = REWRITE_WEAK_BOUNDARY_SCORE,
+    scene_boundaries: list[float] | None = None,
+    scene_tolerance: float = 0.22,
+    scene_bonus: int = 2,
 ) -> tuple[str, Any, list[dict[str, float]]]:
     target_text, _target_source = resolve_rewrite_target_text(transcript_text=transcript_text)
     match_result = match_rewrite_words(words, target_text)
@@ -1445,6 +1493,9 @@ def build_rewrite_plan(
         max_silence_gap=max_silence_gap if max_silence_gap > 0 else None,
         audio_silences=audio_silences,
         weak_boundary_score=weak_boundary_score,
+        scene_boundaries=scene_boundaries,
+        scene_tolerance=scene_tolerance,
+        scene_bonus=scene_bonus,
     )
     if not clip_ranges:
         raise ToolkitError("The target transcript did not leave any exportable ranges.")
@@ -1719,17 +1770,39 @@ def plan_rewrite_edit(
     run_context.rewrite_target_path.write_text(target_text + "\n")
 
     words, segments, transcribe_metadata = transcribe_words(config, run_context, model_name=model_name)
-    audio_silences = detect_audio_silences(
-        run_context.audio_path,
-        noise_db=silence_threshold_db,
-        min_duration=min_silence_duration,
+    speech_regions: list[dict[str, float]] = []
+    audio_silences, vad_backend = resolve_silences(
+        config,
+        run_context,
+        silence_threshold_db=silence_threshold_db,
+        min_silence_duration=min_silence_duration,
+        speech_regions_out=speech_regions,
     )
+
+    scene_boundaries: list[float] = []
+    scene_boundaries_path: Path | None = None
+    if config.analysis.scene_detection:
+        scene_boundaries = detect_scene_boundaries(
+            run_context.input_path,
+            threshold=config.analysis.scene_threshold,
+        ) or []
+        scene_boundaries_path = run_context.run_dir / "scene_boundaries.json"
+        scene_boundaries_path.write_text(json.dumps(scene_boundaries, indent=2))
+
     _resolved_target_text, match_result, ranges = build_rewrite_plan(
         words,
         target_text,
         max_silence_gap=max_silence_gap,
         audio_silences=audio_silences,
         weak_boundary_score=weak_boundary_score,
+        scene_boundaries=scene_boundaries,
+        scene_tolerance=config.analysis.scene_snap_tolerance,
+        scene_bonus=config.analysis.scene_score_bonus,
+    )
+    ranges, scene_snaps = snap_ranges_to_scene_boundaries(
+        ranges,
+        scene_boundaries,
+        tolerance=config.analysis.scene_snap_tolerance,
     )
     padding_before, padding_after = parse_padding(padding, 0.0, 0.0)
     input_duration = probe_duration(run_context.input_path)
@@ -1758,6 +1831,10 @@ def plan_rewrite_edit(
         "unmatched_target_tokens": match_result.unmatched_target_tokens,
         "word_matches": build_word_match_rows(words, match_result),
         "silences": audio_silences,
+        "vad_backend": vad_backend,
+        "speech_regions": speech_regions,
+        "scene_boundaries": scene_boundaries,
+        "scene_snaps": scene_snaps,
         "boundary_scores": build_boundary_scores(words, audio_silences),
         "ranges": ranges,
         "clip_ranges": clip_ranges,
@@ -1771,6 +1848,8 @@ def plan_rewrite_edit(
             "decision_report": str(run_context.decision_report_path),
         },
     }
+    if scene_boundaries_path is not None:
+        plan["artifacts"]["scene_boundaries"] = str(scene_boundaries_path)
     if run_context.transcript_path.exists():
         plan["artifacts"]["transcript"] = str(run_context.transcript_path)
     if run_context.segments_path.exists():
@@ -1834,6 +1913,7 @@ def rewrite_edit(
             "noise_db": silence_threshold_db,
             "min_duration": min_silence_duration,
             "silence_count": len(plan["silences"]),
+            "vad_backend": plan["vad_backend"],
         },
         "artifacts": {
             "target_transcript": str(run_context.rewrite_target_path),
@@ -2621,13 +2701,25 @@ def apply_word_editor_rewrite(
     transcript_text: str,
     *,
     max_silence_gap: float = 0.2,
+    config: AppConfig | None = None,
 ) -> dict[str, Any]:
     audio_silence_min_duration = min(max(max_silence_gap, 0.0), REWRITE_AUDIO_SILENCE_MIN_DURATION) or REWRITE_AUDIO_SILENCE_MIN_DURATION
-    audio_silences = detect_audio_silences(
-        run_context.audio_path,
-        noise_db=REWRITE_AUDIO_SILENCE_DB,
-        min_duration=audio_silence_min_duration,
-    )
+    if config is not None:
+        audio_silences, vad_backend = resolve_silences(
+            config,
+            run_context,
+            silence_threshold_db=REWRITE_AUDIO_SILENCE_DB,
+            min_silence_duration=audio_silence_min_duration,
+        )
+    else:
+        # No config supplied (e.g. direct/unit-test calls): behave exactly as
+        # before and stay on the ffmpeg silence detector.
+        audio_silences = detect_audio_silences(
+            run_context.audio_path,
+            noise_db=REWRITE_AUDIO_SILENCE_DB,
+            min_duration=audio_silence_min_duration,
+        )
+        vad_backend = "ffmpeg"
     target_text, match_result, clip_ranges = build_rewrite_plan(
         words,
         transcript_text,
@@ -2649,10 +2741,12 @@ def apply_word_editor_rewrite(
         },
         "unmatched_target_tokens": match_result.unmatched_target_tokens,
         "max_silence_gap": max_silence_gap,
+        "vad_backend": vad_backend,
         "audio_silence_detection": {
             "noise_db": REWRITE_AUDIO_SILENCE_DB,
             "min_duration": audio_silence_min_duration,
             "silence_count": len(audio_silences),
+            "vad_backend": vad_backend,
         },
         "target_transcript": str(run_context.rewrite_target_path),
     }
@@ -2712,7 +2806,7 @@ def serve_word_editor(
                 if self.path == "/submit":
                     payload = export_word_editor_ranges(config, run_context, body.get("ranges", []))
                 else:
-                    payload = apply_word_editor_rewrite(run_context, words, body.get("transcript", ""))
+                    payload = apply_word_editor_rewrite(run_context, words, body.get("transcript", ""), config=config)
             except ToolkitError as exc:
                 message = str(exc).encode()
                 self.send_response(400)
