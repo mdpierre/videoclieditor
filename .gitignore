@@ -3,7 +3,8 @@ __pycache__/
 .pytest_cache/
 *.pyc
 outputs/
-models/
+models/*
+!models/silero_vad.onnx
 build/
 tmp/
 *.egg-info/
