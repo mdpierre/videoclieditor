@@ -3034,6 +3034,23 @@ def doctor(config: AppConfig) -> dict[str, Any]:
             imports.get("auto_editor", False),
         ]
     )
+
+    # Soft, informational-only probes for the optional analysis extras.
+    # Neither key participates in `checks["ok"]`: Silero VAD and PySceneDetect
+    # are optional accelerants, and their absence must never fail `doctor`.
+    try:
+        import onnxruntime  # noqa: F401
+
+        checks["silero_available"] = True
+    except Exception:
+        checks["silero_available"] = False
+    try:
+        import scenedetect  # noqa: F401
+
+        checks["scenedetect_available"] = True
+    except Exception:
+        checks["scenedetect_available"] = False
+
     return checks
 
 

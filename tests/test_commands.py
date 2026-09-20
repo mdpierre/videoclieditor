@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from unittest.mock import patch
 
 from video_cli_toolkit import cli as cli_module
@@ -625,6 +626,159 @@ def test_plan_rewrite_edit_writes_inspectable_artifacts() -> None:
     assert "Detected Silences" in report_html
     assert "Matched Target" in report_html
     assert "clip-001.mp4" in report_html
+
+
+def test_plan_rewrite_edit_falls_back_to_ffmpeg_when_silero_unavailable() -> None:
+    """Silero explicitly unavailable (returns None) must behave exactly like the
+    ffmpeg-only baseline: vad_backend stays "ffmpeg" and ranges/clip_ranges are
+    unchanged for the same fixed input."""
+    config = load_config(PROJECT_ROOT)
+    run_context = create_run_context(config, Path("/tmp/sample.mp4"), run_id="test-plan-edit-silero-fallback")
+    words = [
+        {"id": 0, "word": "hello", "start": 0.0, "end": 0.2},
+        {"id": 1, "word": "remove", "start": 0.2, "end": 0.4},
+        {"id": 2, "word": "chapter", "start": 0.7, "end": 1.0},
+        {"id": 3, "word": "16.", "start": 1.0, "end": 1.3},
+    ]
+    segments = [{"id": 0, "start": 0.0, "end": 1.3, "text": "hello remove chapter 16"}]
+
+    def fake_transcribe_words(cfg, ctx, model_name=None):
+        assert cfg is config
+        assert ctx is run_context
+        return words, segments, {}
+
+    with (
+        patch("video_cli_toolkit.workflow.transcribe_words", side_effect=fake_transcribe_words),
+        patch("video_cli_toolkit.workflow.detect_audio_silences", return_value=[{"start": 0.4, "end": 0.7, "duration": 0.3}]),
+        patch("video_cli_toolkit.workflow.detect_speech_regions_silero", return_value=None),
+        patch("video_cli_toolkit.workflow.detect_scene_boundaries", return_value=[]),
+        patch("video_cli_toolkit.workflow.probe_duration", return_value=2.0),
+    ):
+        plan = plan_rewrite_edit(
+            config,
+            run_context,
+            transcript_text="hello chapter sixteen",
+            padding="0,0",
+            max_silence_gap=0.2,
+            silence_threshold_db=-32.0,
+            min_silence_duration=0.12,
+            merge_gap=0.0,
+            weak_boundary_score=0,
+            preset="tight-social-clip",
+            notes="draft check",
+        )
+
+    # Same baseline as test_plan_rewrite_edit_writes_inspectable_artifacts.
+    assert plan["clip_count"] == 2
+    assert plan["match_summary"]["kept_word_count"] == 3
+    assert plan["silences"] == [{"start": 0.4, "end": 0.7, "duration": 0.3}]
+    assert plan["vad_backend"] == "ffmpeg"
+    assert plan["speech_regions"] == []
+    assert plan["ranges"] == [{"start": 0.0, "end": 0.2}, {"start": 0.7, "end": 1.3}]
+    assert plan["clip_ranges"] == [
+        {"start": 0.0, "end": 0.2, "text": "", "segment_ids": [], "id": 1, "duration": 0.2},
+        {"start": 0.7, "end": 1.3, "text": "", "segment_ids": [], "id": 2, "duration": 0.6},
+    ]
+
+
+def test_plan_rewrite_edit_uses_silero_speech_regions_when_available() -> None:
+    """When Silero returns speech regions, the plan reports vad_backend "silero",
+    surfaces the raw speech regions, and the inverted non-speech spans show up as
+    plan["silences"] (used downstream by the rewrite matcher)."""
+    config = load_config(PROJECT_ROOT)
+    run_context = create_run_context(config, Path("/tmp/sample.mp4"), run_id="test-plan-edit-silero-available")
+    words = [
+        {"id": 0, "word": "hello", "start": 0.0, "end": 0.2},
+        {"id": 1, "word": "remove", "start": 0.2, "end": 0.4},
+        {"id": 2, "word": "chapter", "start": 0.7, "end": 1.0},
+        {"id": 3, "word": "16.", "start": 1.0, "end": 1.3},
+    ]
+    segments = [{"id": 0, "start": 0.0, "end": 1.3, "text": "hello remove chapter 16"}]
+
+    def fake_transcribe_words(cfg, ctx, model_name=None):
+        return words, segments, {}
+
+    speech_regions = [{"start": 0.0, "end": 0.4}, {"start": 0.7, "end": 2.0}]
+
+    with (
+        patch("video_cli_toolkit.workflow.transcribe_words", side_effect=fake_transcribe_words),
+        patch("video_cli_toolkit.workflow.detect_speech_regions_silero", return_value=speech_regions),
+        patch("video_cli_toolkit.workflow.detect_scene_boundaries", return_value=[]),
+        patch("video_cli_toolkit.workflow.probe_duration", return_value=2.0),
+    ):
+        plan = plan_rewrite_edit(
+            config,
+            run_context,
+            transcript_text="hello chapter sixteen",
+            padding="0,0",
+            max_silence_gap=0.2,
+            silence_threshold_db=-32.0,
+            min_silence_duration=0.12,
+            merge_gap=0.0,
+            weak_boundary_score=0,
+            preset="tight-social-clip",
+            notes="draft check",
+        )
+
+    assert plan["vad_backend"] == "silero"
+    assert plan["speech_regions"] == speech_regions
+    # speech_regions_to_silences inverts [0.0,0.4] + [0.7,2.0] within [0, 2.0]
+    # into a single non-speech gap [0.4, 0.7].
+    assert len(plan["silences"]) == 1
+    assert plan["silences"][0]["start"] == pytest.approx(0.4)
+    assert plan["silences"][0]["end"] == pytest.approx(0.7)
+    assert plan["silences"][0]["duration"] == pytest.approx(0.3)
+
+
+def test_plan_rewrite_edit_snaps_ranges_to_scene_boundaries() -> None:
+    """Scene boundaries near a clip edge produced by the fixture should show up in
+    plan["scene_boundaries"] and trigger at least one plan["scene_snaps"] entry."""
+    config = load_config(PROJECT_ROOT)
+    run_context = create_run_context(config, Path("/tmp/sample.mp4"), run_id="test-plan-edit-scene-snap")
+    words = [
+        {"id": 0, "word": "hello", "start": 0.0, "end": 0.2},
+        {"id": 1, "word": "remove", "start": 0.2, "end": 0.4},
+        {"id": 2, "word": "chapter", "start": 0.7, "end": 1.0},
+        {"id": 3, "word": "16.", "start": 1.0, "end": 1.3},
+    ]
+    segments = [{"id": 0, "start": 0.0, "end": 1.3, "text": "hello remove chapter 16"}]
+
+    def fake_transcribe_words(cfg, ctx, model_name=None):
+        return words, segments, {}
+
+    # Without scene snapping the fixture yields ranges [0.0, 0.2] and [0.7, 1.3]
+    # (see test_plan_rewrite_edit_falls_back_to_ffmpeg_when_silero_unavailable).
+    # 0.68 sits within scene_snap_tolerance (0.22) of the second range's start
+    # (0.7), so it should pull that edge backward to 0.68. 5.0 is unrelated and
+    # only exercises that plan["scene_boundaries"] passes both values through.
+    scene_boundaries = [0.68, 5.0]
+
+    with (
+        patch("video_cli_toolkit.workflow.transcribe_words", side_effect=fake_transcribe_words),
+        patch("video_cli_toolkit.workflow.detect_speech_regions_silero", return_value=None),
+        patch("video_cli_toolkit.workflow.detect_audio_silences", return_value=[{"start": 0.4, "end": 0.7, "duration": 0.3}]),
+        patch("video_cli_toolkit.workflow.detect_scene_boundaries", return_value=scene_boundaries),
+        patch("video_cli_toolkit.workflow.probe_duration", return_value=2.0),
+    ):
+        plan = plan_rewrite_edit(
+            config,
+            run_context,
+            transcript_text="hello chapter sixteen",
+            padding="0,0",
+            max_silence_gap=0.2,
+            silence_threshold_db=-32.0,
+            min_silence_duration=0.12,
+            merge_gap=0.0,
+            weak_boundary_score=0,
+            preset="tight-social-clip",
+            notes="draft check",
+        )
+
+    assert plan["scene_boundaries"] == [0.68, 5.0]
+    assert len(plan["scene_snaps"]) >= 1
+    snap = plan["scene_snaps"][0]
+    assert snap == {"edge": "start", "clip_index": 1, "from": 0.7, "to": 0.68, "boundary": 0.68}
+    assert plan["ranges"][1]["start"] == pytest.approx(0.68)
 
 
 def test_rewrite_edit_builds_ranges_renders_video_and_writes_run_metadata(tmp_path: Path) -> None:
