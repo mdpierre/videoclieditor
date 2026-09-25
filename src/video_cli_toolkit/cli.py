@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
+import shutil
 import sys
 
 from .config import load_config
@@ -14,12 +16,14 @@ from .workflow import (
     edit_from_review,
     edit_media,
     ensure_input_exists,
+    export_run,
     generate_captions,
     generate_review_sheet,
     list_edit_presets,
     plan_rewrite_edit,
     project_root_from_here,
     ranges_from_review,
+    resolve_existing_run_context,
     rewrite_edit,
     resolve_edit_options,
     serve_review_ui,
@@ -140,6 +144,12 @@ def build_parser() -> argparse.ArgumentParser:
                 action="store_true",
                 help="Print machine-friendly JSON output. This is already the default output format.",
             )
+            cmd_parser.add_argument(
+                "--export",
+                action="append",
+                choices=("fcpxml", "edl"),
+                help="Also export the resulting clip ranges to this NLE format (writes export.<format> in the run dir). Repeat for multiple formats.",
+            )
 
     plan_parser = subparsers.add_parser("plan-edit", help="Inspect proposed rewrite word matches, silences, boundaries, and clip ranges without rendering.")
     plan_parser.add_argument("input", type=Path, help="Path to the source media file.")
@@ -165,6 +175,48 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-scene-snap",
         action="store_true",
         help="Disable scene detection and boundary snapping for this run only.",
+    )
+    plan_parser.add_argument(
+        "--export",
+        action="append",
+        choices=("fcpxml", "edl"),
+        help="Also export the resulting clip ranges to this NLE format (writes export.<format> in the run dir). Repeat for multiple formats.",
+    )
+
+    export_parser = subparsers.add_parser(
+        "export",
+        help="Export an existing run's clip_ranges.json to an NLE project file (FCPXML and/or EDL) without rendering.",
+    )
+    export_parser.add_argument("input", type=Path, help="Path to the source media file.")
+    export_parser.add_argument(
+        "--format",
+        dest="formats",
+        action="append",
+        choices=("fcpxml", "edl"),
+        help="NLE export format. Repeat for multiple formats. Default: fcpxml.",
+    )
+    export_parser.add_argument(
+        "--fps",
+        help="Override the detected source frame rate as `N` or `N/D`, for example `30` or `30000/1001`.",
+    )
+    export_parser.add_argument(
+        "--run-id",
+        help="Use this specific existing run directory instead of the newest one for this source.",
+    )
+    export_parser.add_argument(
+        "--from-ranges",
+        type=Path,
+        help="Use this clip-ranges JSON file instead of the run's clip_ranges.json.",
+    )
+    export_parser.add_argument(
+        "--out",
+        type=Path,
+        help=(
+            "Override where the exported file(s) are written. If this is an existing "
+            "directory (or ends with a path separator), export.<format> is written inside "
+            "it; otherwise it is treated as a filename stem and `<stem>.<format>` is "
+            "written for each requested format."
+        ),
     )
 
     we_parser = subparsers.add_parser("word-editor", help="Open browser word-level editor — select and delete words to cut them.")
@@ -386,6 +438,83 @@ def handle_transcript_edit(project_root: Path) -> int:
     return 0
 
 
+def _apply_requested_export(config, run_context, metadata: dict) -> dict:
+    """If `--export` was passed, run `export_run` and merge its artifacts into `metadata`.
+
+    A no-op (metadata returned unchanged) when `--export` was not given, so
+    default plan-edit/rewrite-edit behavior stays byte-identical.
+    """
+    export_formats = getattr(args(), "export", None)
+    if export_formats:
+        export_metadata = export_run(config, run_context, formats=export_formats)
+        metadata.setdefault("artifacts", {}).update(export_metadata["artifacts"])
+        metadata["export"] = export_metadata
+    return metadata
+
+
+def parse_fps_override(value: str | None) -> tuple[int, int] | None:
+    """Parse a `--fps` value (`N` or `N/D`) into an `(fps_num, fps_den)` rational."""
+    if not value:
+        return None
+    text = value.strip()
+    if "/" in text:
+        num_text, _, den_text = text.partition("/")
+    else:
+        num_text, den_text = text, "1"
+    try:
+        return int(num_text), int(den_text)
+    except ValueError as exc:
+        raise ToolkitError(f"Invalid --fps value `{value}`. Use `N` or `N/D`, for example `30` or `30000/1001`.") from exc
+
+
+def _resolve_export_out_paths(out: Path, formats: list[str]) -> dict[str, Path]:
+    """Resolve `--out` into a destination path per requested format.
+
+    If `out` is an existing directory (or the path text ends with a path
+    separator), each format is written as `export.<format>` inside it.
+    Otherwise `out` is treated as a filename stem and each format is written
+    as `<stem>.<format>` (any suffix already on `out` is replaced).
+    """
+    if out.is_dir() or str(out).endswith(os.sep):
+        out.mkdir(parents=True, exist_ok=True)
+        return {fmt: out / f"export.{fmt}" for fmt in formats}
+    stem = out.with_suffix("") if out.suffix else out
+    stem.parent.mkdir(parents=True, exist_ok=True)
+    return {fmt: Path(f"{stem}.{fmt}") for fmt in formats}
+
+
+def handle_export(project_root: Path) -> int:
+    config = load_config(project_root)
+    input_path = args().input.expanduser().resolve()
+    ensure_input_exists(input_path)
+    run_context = resolve_existing_run_context(config, input_path, run_id=getattr(args(), "run_id", None))
+
+    formats = getattr(args(), "formats", None) or ["fcpxml"]
+    fps_override = parse_fps_override(getattr(args(), "fps", None))
+    from_ranges = getattr(args(), "from_ranges", None)
+    ranges_path = from_ranges.expanduser().resolve() if from_ranges else None
+
+    metadata = export_run(
+        config,
+        run_context,
+        formats=formats,
+        fps_override=fps_override,
+        ranges_path=ranges_path,
+    )
+
+    out = getattr(args(), "out", None)
+    if out is not None:
+        out_paths = _resolve_export_out_paths(out.expanduser(), formats)
+        relocated_artifacts: dict[str, str] = {}
+        for export_format, dest in out_paths.items():
+            shutil.copy2(metadata["artifacts"][export_format], dest)
+            relocated_artifacts[export_format] = str(dest)
+        metadata["artifacts"] = relocated_artifacts
+
+    print_json({"run_dir": str(run_context.run_dir), **metadata})
+    return 0
+
+
 def handle_plan_edit(project_root: Path) -> int:
     config = load_config(project_root)
     input_path = args().input.expanduser().resolve()
@@ -410,6 +539,7 @@ def handle_plan_edit(project_root: Path) -> int:
         vad_backend_override=getattr(args(), "vad", None),
         scene_detection_override=(False if getattr(args(), "no_scene_snap", False) else None),
     )
+    metadata = _apply_requested_export(config, run_context, metadata)
     write_run_metadata(run_context, metadata)
     print_json({"run_dir": str(run_context.run_dir), **metadata})
     return 0
@@ -439,6 +569,7 @@ def handle_rewrite_edit(project_root: Path) -> int:
         vad_backend_override=getattr(args(), "vad", None),
         scene_detection_override=(False if getattr(args(), "no_scene_snap", False) else None),
     )
+    metadata = _apply_requested_export(config, run_context, metadata)
     write_run_metadata(run_context, metadata)
     print_json({"run_dir": str(run_context.run_dir), **metadata})
     return 0
@@ -586,6 +717,8 @@ def main(argv: list[str] | None = None) -> int:
             return handle_plan_edit(project_root)
         if _ARGS.command == "rewrite-edit":
             return handle_rewrite_edit(project_root)
+        if _ARGS.command == "export":
+            return handle_export(project_root)
         if _ARGS.command == "word-editor":
             return handle_word_editor(project_root)
         if _ARGS.command == "review-ui":

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from difflib import SequenceMatcher
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -23,6 +23,7 @@ from .analysis import (
     speech_regions_to_silences,
 )
 from .config import AppConfig
+from . import exporters
 from .rewrite_matcher import build_ranges_from_kept_word_ids, match_rewrite_words, score_boundary
 
 
@@ -152,6 +153,8 @@ class RunContext:
     rewrite_target_path: Path
     edit_plan_path: Path
     decision_report_path: Path
+    fcpxml_path: Path
+    edl_path: Path
 
 
 def project_root_from_here() -> Path:
@@ -203,7 +206,76 @@ def create_run_context(config: AppConfig, input_path: Path, run_id: str | None =
         rewrite_target_path=run_dir / "rewrite_target.txt",
         edit_plan_path=run_dir / "edit_plan.json",
         decision_report_path=run_dir / "decision_report.html",
+        fcpxml_path=run_dir / "export.fcpxml",
+        edl_path=run_dir / "export.edl",
     )
+
+
+def resolve_existing_run_context(config: AppConfig, input_path: Path, run_id: str | None = None) -> RunContext:
+    """Resolve a `RunContext` pointing at a previously created run for `input_path`.
+
+    Used by commands (like `export`) that operate on artifacts from an earlier
+    `plan-edit`/`rewrite-edit`/etc. run rather than starting a new one. When
+    `run_id` is given, it is used directly. Otherwise the newest existing run
+    directory for this source (by directory mtime) is used. Raises
+    `ToolkitError` when no run exists yet.
+    """
+    if run_id:
+        return create_run_context(config, input_path, run_id=run_id)
+
+    source_stem = input_path.stem.replace(" ", "-")
+    source_dir = config.outputs.root / source_stem
+    candidates = [entry for entry in source_dir.glob("*") if entry.is_dir()] if source_dir.exists() else []
+    if not candidates:
+        raise ToolkitError(
+            f"No existing run found for {input_path}. Run `plan-edit` or `rewrite-edit` first."
+        )
+    newest = max(candidates, key=lambda entry: entry.stat().st_mtime)
+    return create_run_context(config, input_path, run_id=newest.name)
+
+
+def export_run(
+    config: AppConfig,
+    run_context: RunContext,
+    *,
+    formats: list[str],
+    fps_override: tuple[int, int] | None = None,
+    ranges_path: Path | None = None,
+) -> dict[str, Any]:
+    """Serialize `clip_ranges.json` (or an explicit ranges file) into NLE project files.
+
+    Pure serializer step: reads the already-decided clip ranges and the
+    source's probed `VideoFormat`, then writes the requested `formats`
+    (`"fcpxml"` and/or `"edl"`) via `exporters.build_fcpxml`/`build_edl`. Never
+    edits or renders video.
+    """
+    resolved_ranges_path = ranges_path or run_context.clip_ranges_path
+    if not resolved_ranges_path.exists():
+        raise ToolkitError("No clip_ranges found — run plan-edit or rewrite-edit first.")
+
+    clip_ranges = json.loads(resolved_ranges_path.read_text())
+
+    video_format = exporters.probe_video_format(run_context.input_path)
+    if fps_override is not None:
+        video_format = replace(video_format, fps_num=fps_override[0], fps_den=fps_override[1])
+
+    artifacts: dict[str, str] = {}
+    for export_format in formats:
+        if export_format == "fcpxml":
+            run_context.fcpxml_path.write_text(exporters.build_fcpxml(clip_ranges, video_format))
+            artifacts["fcpxml"] = str(run_context.fcpxml_path)
+        elif export_format == "edl":
+            run_context.edl_path.write_text(exporters.build_edl(clip_ranges, video_format))
+            artifacts["edl"] = str(run_context.edl_path)
+        else:
+            raise ToolkitError(f"Unknown export format `{export_format}`. Supported formats: fcpxml, edl.")
+
+    return {
+        "step": "export",
+        "formats": formats,
+        "clip_count": len(clip_ranges),
+        "artifacts": artifacts,
+    }
 
 
 def discover_whisper_binary(config: AppConfig) -> str | None:
