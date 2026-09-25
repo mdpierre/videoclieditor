@@ -11,6 +11,9 @@ requires-python = ">=3.11"
 authors = [{ name = "Michael Pierre" }]
 dependencies = []
 
+[project.optional-dependencies]
+analysis = ["onnxruntime", "scenedetect[opencv]"]
+
 [project.scripts]
 toolkit = "video_cli_toolkit.cli:main"
 

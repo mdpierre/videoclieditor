@@ -17,3 +17,10 @@ audio_codec = "pcm_s16le"
 video_codec = "h264_videotoolbox"
 quality = "50"
 
+[analysis]
+vad_backend = "silero"        # "silero" | "ffmpeg"
+scene_detection = true
+scene_threshold = 27.0        # PySceneDetect ContentDetector threshold (sole authority)
+scene_snap_tolerance = 0.22
+scene_score_bonus = 2         # boundary-score bonus when a gap sits on a scene cut
+

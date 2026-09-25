@@ -2,6 +2,7 @@ from video_cli_toolkit.rewrite_matcher import (
     build_ranges_from_kept_word_ids,
     match_rewrite_words,
     normalize_rewrite_token,
+    score_boundary,
     tokenize_rewrite_text,
 )
 
@@ -342,3 +343,52 @@ def test_build_ranges_from_kept_word_ids_merges_across_short_weak_clause_gap() -
     )
 
     assert ranges == [{"start": 0.0, "end": 0.6}]
+
+
+def test_score_boundary_adds_scene_bonus_for_nearby_boundary() -> None:
+    words = [
+        {"id": 0, "word": "today.", "start": 0.8, "end": 1.0},
+        {"id": 1, "word": "tomorrow", "start": 1.2, "end": 1.5},
+    ]
+
+    baseline_score = score_boundary(words, 0, 1)
+    assert baseline_score == 5
+
+    boosted_score = score_boundary(
+        words,
+        0,
+        1,
+        scene_boundaries=[1.1],
+        scene_tolerance=0.22,
+        scene_bonus=2,
+    )
+
+    assert boosted_score == baseline_score + 2
+
+
+def test_score_boundary_unchanged_when_scene_boundaries_none() -> None:
+    words = [
+        {"id": 0, "word": "today.", "start": 0.8, "end": 1.0},
+        {"id": 1, "word": "tomorrow", "start": 1.2, "end": 1.5},
+    ]
+
+    assert score_boundary(words, 0, 1, scene_boundaries=None) == 5
+
+
+def test_score_boundary_unchanged_when_boundary_outside_tolerance() -> None:
+    words = [
+        {"id": 0, "word": "today.", "start": 0.8, "end": 1.0},
+        {"id": 1, "word": "tomorrow", "start": 1.2, "end": 1.5},
+    ]
+
+    assert (
+        score_boundary(
+            words,
+            0,
+            1,
+            scene_boundaries=[2.0],
+            scene_tolerance=0.22,
+            scene_bonus=2,
+        )
+        == 5
+    )

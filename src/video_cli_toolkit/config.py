@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import tomllib
 
@@ -35,6 +35,15 @@ class FfmpegConfig:
 
 
 @dataclass(frozen=True)
+class AnalysisConfig:
+    vad_backend: str
+    scene_detection: bool
+    scene_threshold: float
+    scene_snap_tolerance: float
+    scene_score_bonus: int
+
+
+@dataclass(frozen=True)
 class AppConfig:
     project_root: Path
     whisper: WhisperConfig
@@ -42,10 +51,15 @@ class AppConfig:
     outputs: OutputConfig
     captions: CaptionConfig
     ffmpeg: FfmpegConfig
+    analysis: AnalysisConfig = field(default_factory=lambda: _load_analysis_config({}))
 
     def model_path(self, model_name: str | None = None) -> Path:
         chosen_model = model_name or self.whisper.model_name
         return self.project_root / self.whisper.model_dir / f"ggml-{chosen_model}.bin"
+
+    @property
+    def silero_model_path(self) -> Path:
+        return self.project_root / self.whisper.model_dir / "silero_vad.onnx"
 
 
 def load_config(project_root: Path) -> AppConfig:
@@ -74,5 +88,16 @@ def load_config(project_root: Path) -> AppConfig:
             video_codec=data["ffmpeg"]["video_codec"],
             quality=data["ffmpeg"]["quality"],
         ),
+        analysis=_load_analysis_config(data.get("analysis", {})),
+    )
+
+
+def _load_analysis_config(analysis_data: dict) -> AnalysisConfig:
+    return AnalysisConfig(
+        vad_backend=analysis_data.get("vad_backend", "silero"),
+        scene_detection=bool(analysis_data.get("scene_detection", True)),
+        scene_threshold=float(analysis_data.get("scene_threshold", 27.0)),
+        scene_snap_tolerance=float(analysis_data.get("scene_snap_tolerance", 0.22)),
+        scene_score_bonus=int(analysis_data.get("scene_score_bonus", 2)),
     )
 

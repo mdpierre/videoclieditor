@@ -1,10 +1,13 @@
 import json
 from pathlib import Path
 from types import SimpleNamespace
+import xml.etree.ElementTree as ET
 
+import pytest
 from unittest.mock import patch
 
 from video_cli_toolkit import cli as cli_module
+from video_cli_toolkit import exporters
 from video_cli_toolkit.workflow import (
     _run_check_command,
     apply_word_editor_rewrite,
@@ -20,6 +23,7 @@ from video_cli_toolkit.workflow import (
     build_ranges_from_segment_ids,
     doctor,
     edit_from_review,
+    export_run,
     export_word_editor_ranges,
     generate_word_editor_html,
     group_words_for_editor,
@@ -32,6 +36,7 @@ from video_cli_toolkit.workflow import (
     parse_silencedetect_output,
     parse_review_instructions,
     resolve_edit_options,
+    resolve_existing_run_context,
     resolve_rewrite_target_text,
     rewrite_edit,
     select_segments_by_fuzzy_queries,
@@ -126,6 +131,8 @@ def test_run_context_paths() -> None:
     assert run_context.edited_path.name == "edited.mp4"
     assert run_context.transcript_edit_path.name == "transcript_edit.mp4"
     assert run_context.review_sheet_path.name == "review_sheet.txt"
+    assert run_context.fcpxml_path == run_context.run_dir / "export.fcpxml"
+    assert run_context.edl_path == run_context.run_dir / "export.edl"
 
 
 def test_transcript_selection_and_range_merging() -> None:
@@ -293,6 +300,8 @@ def test_apply_word_editor_rewrite_uses_shared_python_matcher() -> None:
     }
     assert result["max_silence_gap"] == 0.2
     assert result["audio_silence_detection"]["silence_count"] == 0
+    assert result["vad_backend"] == "ffmpeg"
+    assert result["audio_silence_detection"]["vad_backend"] == "ffmpeg"
     assert Path(result["target_transcript"]) == run_context.rewrite_target_path
     assert run_context.rewrite_target_path.read_text() == "hello chapter sixteen\n"
 
@@ -612,6 +621,10 @@ def test_plan_rewrite_edit_writes_inspectable_artifacts() -> None:
     assert [word["decision"] for word in plan["word_matches"]] == ["keep", "cut", "keep", "keep"]
     assert plan["silences"] == [{"start": 0.4, "end": 0.7, "duration": 0.3}]
     assert plan["options"]["silence_threshold_db"] == -32.0
+    assert plan["vad_backend"] == "ffmpeg"
+    assert plan["speech_regions"] == []
+    assert plan["scene_boundaries"] == []
+    assert plan["scene_snaps"] == []
     assert run_context.edit_plan_path.exists()
     assert run_context.decision_report_path.exists()
     report_html = run_context.decision_report_path.read_text()
@@ -619,6 +632,168 @@ def test_plan_rewrite_edit_writes_inspectable_artifacts() -> None:
     assert "Detected Silences" in report_html
     assert "Matched Target" in report_html
     assert "clip-001.mp4" in report_html
+    assert "Scene Snaps" in report_html
+    assert "No scene snaps." in report_html
+    assert "VAD Backend" in report_html
+    assert "<strong>ffmpeg</strong>" in report_html
+
+
+def test_plan_rewrite_edit_falls_back_to_ffmpeg_when_silero_unavailable() -> None:
+    """Silero explicitly unavailable (returns None) must behave exactly like the
+    ffmpeg-only baseline: vad_backend stays "ffmpeg" and ranges/clip_ranges are
+    unchanged for the same fixed input."""
+    config = load_config(PROJECT_ROOT)
+    run_context = create_run_context(config, Path("/tmp/sample.mp4"), run_id="test-plan-edit-silero-fallback")
+    words = [
+        {"id": 0, "word": "hello", "start": 0.0, "end": 0.2},
+        {"id": 1, "word": "remove", "start": 0.2, "end": 0.4},
+        {"id": 2, "word": "chapter", "start": 0.7, "end": 1.0},
+        {"id": 3, "word": "16.", "start": 1.0, "end": 1.3},
+    ]
+    segments = [{"id": 0, "start": 0.0, "end": 1.3, "text": "hello remove chapter 16"}]
+
+    def fake_transcribe_words(cfg, ctx, model_name=None):
+        assert cfg is config
+        assert ctx is run_context
+        return words, segments, {}
+
+    with (
+        patch("video_cli_toolkit.workflow.transcribe_words", side_effect=fake_transcribe_words),
+        patch("video_cli_toolkit.workflow.detect_audio_silences", return_value=[{"start": 0.4, "end": 0.7, "duration": 0.3}]),
+        patch("video_cli_toolkit.workflow.detect_speech_regions_silero", return_value=None),
+        patch("video_cli_toolkit.workflow.detect_scene_boundaries", return_value=[]),
+        patch("video_cli_toolkit.workflow.probe_duration", return_value=2.0),
+    ):
+        plan = plan_rewrite_edit(
+            config,
+            run_context,
+            transcript_text="hello chapter sixteen",
+            padding="0,0",
+            max_silence_gap=0.2,
+            silence_threshold_db=-32.0,
+            min_silence_duration=0.12,
+            merge_gap=0.0,
+            weak_boundary_score=0,
+            preset="tight-social-clip",
+            notes="draft check",
+        )
+
+    # Same baseline as test_plan_rewrite_edit_writes_inspectable_artifacts.
+    assert plan["clip_count"] == 2
+    assert plan["match_summary"]["kept_word_count"] == 3
+    assert plan["silences"] == [{"start": 0.4, "end": 0.7, "duration": 0.3}]
+    assert plan["vad_backend"] == "ffmpeg"
+    assert plan["speech_regions"] == []
+    assert plan["ranges"] == [{"start": 0.0, "end": 0.2}, {"start": 0.7, "end": 1.3}]
+    assert plan["clip_ranges"] == [
+        {"start": 0.0, "end": 0.2, "text": "", "segment_ids": [], "id": 1, "duration": 0.2},
+        {"start": 0.7, "end": 1.3, "text": "", "segment_ids": [], "id": 2, "duration": 0.6},
+    ]
+
+
+def test_plan_rewrite_edit_uses_silero_speech_regions_when_available() -> None:
+    """When Silero returns speech regions, the plan reports vad_backend "silero",
+    surfaces the raw speech regions, and the inverted non-speech spans show up as
+    plan["silences"] (used downstream by the rewrite matcher)."""
+    config = load_config(PROJECT_ROOT)
+    run_context = create_run_context(config, Path("/tmp/sample.mp4"), run_id="test-plan-edit-silero-available")
+    words = [
+        {"id": 0, "word": "hello", "start": 0.0, "end": 0.2},
+        {"id": 1, "word": "remove", "start": 0.2, "end": 0.4},
+        {"id": 2, "word": "chapter", "start": 0.7, "end": 1.0},
+        {"id": 3, "word": "16.", "start": 1.0, "end": 1.3},
+    ]
+    segments = [{"id": 0, "start": 0.0, "end": 1.3, "text": "hello remove chapter 16"}]
+
+    def fake_transcribe_words(cfg, ctx, model_name=None):
+        return words, segments, {}
+
+    speech_regions = [{"start": 0.0, "end": 0.4}, {"start": 0.7, "end": 2.0}]
+
+    with (
+        patch("video_cli_toolkit.workflow.transcribe_words", side_effect=fake_transcribe_words),
+        patch("video_cli_toolkit.workflow.detect_speech_regions_silero", return_value=speech_regions),
+        patch("video_cli_toolkit.workflow.detect_scene_boundaries", return_value=[]),
+        patch("video_cli_toolkit.workflow.probe_duration", return_value=2.0),
+    ):
+        plan = plan_rewrite_edit(
+            config,
+            run_context,
+            transcript_text="hello chapter sixteen",
+            padding="0,0",
+            max_silence_gap=0.2,
+            silence_threshold_db=-32.0,
+            min_silence_duration=0.12,
+            merge_gap=0.0,
+            weak_boundary_score=0,
+            preset="tight-social-clip",
+            notes="draft check",
+        )
+
+    assert plan["vad_backend"] == "silero"
+    assert plan["speech_regions"] == speech_regions
+    # speech_regions_to_silences inverts [0.0,0.4] + [0.7,2.0] within [0, 2.0]
+    # into a single non-speech gap [0.4, 0.7].
+    assert len(plan["silences"]) == 1
+    assert plan["silences"][0]["start"] == pytest.approx(0.4)
+    assert plan["silences"][0]["end"] == pytest.approx(0.7)
+    assert plan["silences"][0]["duration"] == pytest.approx(0.3)
+
+
+def test_plan_rewrite_edit_snaps_ranges_to_scene_boundaries() -> None:
+    """Scene boundaries near a clip edge produced by the fixture should show up in
+    plan["scene_boundaries"] and trigger at least one plan["scene_snaps"] entry."""
+    config = load_config(PROJECT_ROOT)
+    run_context = create_run_context(config, Path("/tmp/sample.mp4"), run_id="test-plan-edit-scene-snap")
+    words = [
+        {"id": 0, "word": "hello", "start": 0.0, "end": 0.2},
+        {"id": 1, "word": "remove", "start": 0.2, "end": 0.4},
+        {"id": 2, "word": "chapter", "start": 0.7, "end": 1.0},
+        {"id": 3, "word": "16.", "start": 1.0, "end": 1.3},
+    ]
+    segments = [{"id": 0, "start": 0.0, "end": 1.3, "text": "hello remove chapter 16"}]
+
+    def fake_transcribe_words(cfg, ctx, model_name=None):
+        return words, segments, {}
+
+    # Without scene snapping the fixture yields ranges [0.0, 0.2] and [0.7, 1.3]
+    # (see test_plan_rewrite_edit_falls_back_to_ffmpeg_when_silero_unavailable).
+    # 0.68 sits within scene_snap_tolerance (0.22) of the second range's start
+    # (0.7), so it should pull that edge backward to 0.68. 5.0 is unrelated and
+    # only exercises that plan["scene_boundaries"] passes both values through.
+    scene_boundaries = [0.68, 5.0]
+
+    with (
+        patch("video_cli_toolkit.workflow.transcribe_words", side_effect=fake_transcribe_words),
+        patch("video_cli_toolkit.workflow.detect_speech_regions_silero", return_value=None),
+        patch("video_cli_toolkit.workflow.detect_audio_silences", return_value=[{"start": 0.4, "end": 0.7, "duration": 0.3}]),
+        patch("video_cli_toolkit.workflow.detect_scene_boundaries", return_value=scene_boundaries),
+        patch("video_cli_toolkit.workflow.probe_duration", return_value=2.0),
+    ):
+        plan = plan_rewrite_edit(
+            config,
+            run_context,
+            transcript_text="hello chapter sixteen",
+            padding="0,0",
+            max_silence_gap=0.2,
+            silence_threshold_db=-32.0,
+            min_silence_duration=0.12,
+            merge_gap=0.0,
+            weak_boundary_score=0,
+            preset="tight-social-clip",
+            notes="draft check",
+        )
+
+    assert plan["scene_boundaries"] == [0.68, 5.0]
+    assert len(plan["scene_snaps"]) >= 1
+    snap = plan["scene_snaps"][0]
+    assert snap == {"edge": "start", "clip_index": 1, "from": 0.7, "to": 0.68, "boundary": 0.68}
+    assert plan["ranges"][1]["start"] == pytest.approx(0.68)
+
+    report_html = run_context.decision_report_path.read_text()
+    assert "Scene Snaps" in report_html
+    assert "<td>start</td>" in report_html
+    assert "0.700 → 0.680" in report_html
 
 
 def test_rewrite_edit_builds_ranges_renders_video_and_writes_run_metadata(tmp_path: Path) -> None:
@@ -751,12 +926,59 @@ def test_handle_rewrite_edit_reads_stdin_and_prints_json(capsys: object) -> None
         weak_boundary_score=0,
         preset=None,
         notes=None,
+        vad_backend_override=None,
+        scene_detection_override=None,
     )
     write_run_metadata_mock.assert_called_once()
     payload = json.loads(capsys.readouterr().out)
     assert payload["run_dir"] == str(run_context.run_dir)
     assert payload["step"] == "rewrite-edit"
     assert payload["clip_count"] == 2
+
+
+def test_handle_rewrite_edit_threads_vad_and_no_scene_snap_overrides(capsys: object) -> None:
+    config = load_config(PROJECT_ROOT)
+    run_context = create_run_context(config, Path("/tmp/sample.mp4"), run_id="test-handle-rewrite-overrides")
+    fake_args = SimpleNamespace(
+        input=Path("/tmp/sample.mp4"),
+        transcript_file=None,
+        transcript="hello final draft",
+        stdin=False,
+        model=None,
+        padding=None,
+        max_silence=None,
+        merge_gap=None,
+        preset=None,
+        silence_threshold_db=None,
+        min_silence_duration=None,
+        weak_boundary_score=None,
+        notes=None,
+        json=True,
+        vad="ffmpeg",
+        no_scene_snap=True,
+    )
+
+    with (
+        patch.object(cli_module, "_ARGS", fake_args),
+        patch("video_cli_toolkit.cli.load_config", return_value=config),
+        patch("video_cli_toolkit.cli.ensure_input_exists"),
+        patch("video_cli_toolkit.cli.create_run_context", return_value=run_context),
+        patch(
+            "video_cli_toolkit.cli.rewrite_edit",
+            return_value={
+                "step": "rewrite-edit",
+                "clip_count": 1,
+                "artifacts": {"transcript_edit": str(run_context.transcript_edit_path)},
+            },
+        ) as rewrite_edit_mock,
+        patch("video_cli_toolkit.cli.write_run_metadata"),
+    ):
+        exit_code = cli_module.handle_rewrite_edit(PROJECT_ROOT)
+
+    assert exit_code == 0
+    _, call_kwargs = rewrite_edit_mock.call_args
+    assert call_kwargs["vad_backend_override"] == "ffmpeg"
+    assert call_kwargs["scene_detection_override"] is False
 
 
 def test_doctor_tolerates_optional_import_timeout(tmp_path: Path) -> None:
@@ -803,3 +1025,240 @@ def test_doctor_tolerates_optional_import_timeout(tmp_path: Path) -> None:
     assert result["python_imports"]["auto_editor"] is True
     assert result["python_imports"]["moviepy"] is False
     assert result["python_import_timeouts"]["moviepy"] is True
+
+
+def _fixed_video_format(src_path: Path) -> exporters.VideoFormat:
+    return exporters.VideoFormat(
+        fps_num=30,
+        fps_den=1,
+        width=1920,
+        height=1080,
+        duration=10.0,
+        src_path=str(src_path),
+        name=src_path.stem,
+    )
+
+
+def test_export_run_writes_fcpxml_and_edl() -> None:
+    config = load_config(PROJECT_ROOT)
+    run_context = create_run_context(config, Path("/tmp/sample.mp4"), run_id="test-export-run")
+    clip_ranges = [
+        {"id": 1, "start": 0.0, "end": 1.0, "duration": 1.0, "text": "clip one", "segment_ids": [0]},
+        {"id": 2, "start": 2.0, "end": 3.5, "duration": 1.5, "text": "clip two", "segment_ids": [1]},
+    ]
+    run_context.clip_ranges_path.write_text(json.dumps(clip_ranges, indent=2))
+
+    with patch(
+        "video_cli_toolkit.workflow.exporters.probe_video_format",
+        side_effect=lambda src_path: _fixed_video_format(Path(src_path)),
+    ) as probe_mock:
+        result = export_run(config, run_context, formats=["fcpxml", "edl"])
+
+    probe_mock.assert_called_once_with(run_context.input_path)
+    assert result["step"] == "export"
+    assert result["formats"] == ["fcpxml", "edl"]
+    assert result["clip_count"] == 2
+    assert result["artifacts"]["fcpxml"] == str(run_context.fcpxml_path)
+    assert result["artifacts"]["edl"] == str(run_context.edl_path)
+
+    assert run_context.fcpxml_path.exists()
+    assert run_context.edl_path.exists()
+
+    parsed = ET.fromstring(run_context.fcpxml_path.read_text())
+    asset_clips = parsed.findall(".//spine/asset-clip")
+    assert len(asset_clips) == 2
+
+    edl_text = run_context.edl_path.read_text()
+    assert edl_text.count("* COMMENT:") == 2
+    assert "001  AX       AA/V  C        " in edl_text
+    assert "002  AX       AA/V  C        " in edl_text
+
+
+def test_export_run_errors_without_ranges() -> None:
+    config = load_config(PROJECT_ROOT)
+    run_context = create_run_context(config, Path("/tmp/sample.mp4"), run_id="test-export-run-missing-ranges")
+    if run_context.clip_ranges_path.exists():
+        run_context.clip_ranges_path.unlink()
+
+    with pytest.raises(ToolkitError, match="No clip_ranges found"):
+        export_run(config, run_context, formats=["fcpxml"])
+
+
+def test_handle_plan_edit_export_flag_triggers_export_and_merges_artifacts(capsys: object) -> None:
+    config = load_config(PROJECT_ROOT)
+    run_context = create_run_context(config, Path("/tmp/sample.mp4"), run_id="test-plan-edit-export")
+    fake_args = SimpleNamespace(
+        input=Path("/tmp/sample.mp4"),
+        transcript_file=None,
+        transcript="hello final draft",
+        stdin=False,
+        model=None,
+        padding=None,
+        max_silence=None,
+        merge_gap=None,
+        preset=None,
+        silence_threshold_db=None,
+        min_silence_duration=None,
+        weak_boundary_score=None,
+        notes=None,
+        vad=None,
+        no_scene_snap=False,
+        export=["fcpxml"],
+    )
+
+    with (
+        patch.object(cli_module, "_ARGS", fake_args),
+        patch("video_cli_toolkit.cli.load_config", return_value=config),
+        patch("video_cli_toolkit.cli.ensure_input_exists"),
+        patch("video_cli_toolkit.cli.create_run_context", return_value=run_context),
+        patch(
+            "video_cli_toolkit.cli.plan_rewrite_edit",
+            return_value={
+                "step": "plan-edit",
+                "clip_count": 1,
+                "artifacts": {"clip_ranges": str(run_context.clip_ranges_path)},
+            },
+        ) as plan_rewrite_edit_mock,
+        patch("video_cli_toolkit.cli.write_run_metadata") as write_run_metadata_mock,
+        patch(
+            "video_cli_toolkit.cli.export_run",
+            return_value={
+                "step": "export",
+                "formats": ["fcpxml"],
+                "clip_count": 1,
+                "artifacts": {"fcpxml": str(run_context.fcpxml_path)},
+            },
+        ) as export_run_mock,
+    ):
+        exit_code = cli_module.handle_plan_edit(PROJECT_ROOT)
+
+    assert exit_code == 0
+    plan_rewrite_edit_mock.assert_called_once()
+    export_run_mock.assert_called_once_with(config, run_context, formats=["fcpxml"])
+    write_run_metadata_mock.assert_called_once()
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["artifacts"]["clip_ranges"] == str(run_context.clip_ranges_path)
+    assert payload["artifacts"]["fcpxml"] == str(run_context.fcpxml_path)
+    assert payload["export"]["formats"] == ["fcpxml"]
+
+
+def test_handle_rewrite_edit_without_export_flag_does_not_call_export_run(capsys: object) -> None:
+    config = load_config(PROJECT_ROOT)
+    run_context = create_run_context(config, Path("/tmp/sample.mp4"), run_id="test-rewrite-edit-no-export")
+    fake_args = SimpleNamespace(
+        input=Path("/tmp/sample.mp4"),
+        transcript_file=None,
+        transcript="hello final draft",
+        stdin=False,
+        model=None,
+        padding=None,
+        max_silence=None,
+        merge_gap=None,
+        preset=None,
+        silence_threshold_db=None,
+        min_silence_duration=None,
+        weak_boundary_score=None,
+        notes=None,
+        json=True,
+        vad=None,
+        no_scene_snap=False,
+        export=None,
+    )
+
+    with (
+        patch.object(cli_module, "_ARGS", fake_args),
+        patch("video_cli_toolkit.cli.load_config", return_value=config),
+        patch("video_cli_toolkit.cli.ensure_input_exists"),
+        patch("video_cli_toolkit.cli.create_run_context", return_value=run_context),
+        patch(
+            "video_cli_toolkit.cli.rewrite_edit",
+            return_value={
+                "step": "rewrite-edit",
+                "clip_count": 1,
+                "artifacts": {"transcript_edit": str(run_context.transcript_edit_path)},
+            },
+        ),
+        patch("video_cli_toolkit.cli.write_run_metadata"),
+        patch("video_cli_toolkit.cli.export_run") as export_run_mock,
+    ):
+        exit_code = cli_module.handle_rewrite_edit(PROJECT_ROOT)
+
+    assert exit_code == 0
+    export_run_mock.assert_not_called()
+    payload = json.loads(capsys.readouterr().out)
+    assert "export" not in payload
+    assert payload["artifacts"] == {"transcript_edit": str(run_context.transcript_edit_path)}
+
+
+def test_handle_export_resolves_newest_run_and_prints_metadata(capsys: object) -> None:
+    config = load_config(PROJECT_ROOT)
+    run_context = create_run_context(config, Path("/tmp/sample.mp4"), run_id="test-export-cli")
+    fake_args = SimpleNamespace(
+        input=Path("/tmp/sample.mp4"),
+        formats=["fcpxml"],
+        fps=None,
+        run_id=None,
+        from_ranges=None,
+        out=None,
+    )
+
+    with (
+        patch.object(cli_module, "_ARGS", fake_args),
+        patch("video_cli_toolkit.cli.load_config", return_value=config),
+        patch("video_cli_toolkit.cli.ensure_input_exists"),
+        patch("video_cli_toolkit.cli.resolve_existing_run_context", return_value=run_context) as resolve_mock,
+        patch(
+            "video_cli_toolkit.cli.export_run",
+            return_value={
+                "step": "export",
+                "formats": ["fcpxml"],
+                "clip_count": 3,
+                "artifacts": {"fcpxml": str(run_context.fcpxml_path)},
+            },
+        ) as export_run_mock,
+    ):
+        exit_code = cli_module.handle_export(PROJECT_ROOT)
+
+    assert exit_code == 0
+    resolve_mock.assert_called_once_with(config, Path("/tmp/sample.mp4"), run_id=None)
+    export_run_mock.assert_called_once_with(
+        config,
+        run_context,
+        formats=["fcpxml"],
+        fps_override=None,
+        ranges_path=None,
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["run_dir"] == str(run_context.run_dir)
+    assert payload["clip_count"] == 3
+    assert payload["artifacts"]["fcpxml"] == str(run_context.fcpxml_path)
+
+
+def test_resolve_existing_run_context_picks_newest_run_dir(tmp_path: Path) -> None:
+    import os as _os
+    from dataclasses import replace as _replace
+
+    from video_cli_toolkit.config import OutputConfig
+
+    config = _replace(load_config(PROJECT_ROOT), outputs=OutputConfig(root=tmp_path / "outputs"))
+    input_path = Path("/tmp/sample.mp4")
+    older = create_run_context(config, input_path, run_id="test-newest-older")
+    newer = create_run_context(config, input_path, run_id="test-newest-newer")
+    # Force a distinguishable mtime ordering regardless of directory creation order
+    # or filesystem mtime resolution.
+    now = older.run_dir.stat().st_mtime
+    _os.utime(older.run_dir, (now, now - 100))
+    _os.utime(newer.run_dir, (now, now))
+
+    resolved = resolve_existing_run_context(config, input_path)
+    assert resolved.run_dir == newer.run_dir
+
+
+def test_resolve_existing_run_context_errors_when_no_run_exists(tmp_path: Path) -> None:
+    from dataclasses import replace as _replace
+
+    from video_cli_toolkit.config import OutputConfig
+
+    config = _replace(load_config(PROJECT_ROOT), outputs=OutputConfig(root=tmp_path / "outputs"))
+    with pytest.raises(ToolkitError, match="No existing run found"):
+        resolve_existing_run_context(config, Path("/tmp/never-run-this-source.mp4"))
